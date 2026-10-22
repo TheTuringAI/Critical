@@ -1,3 +1,5 @@
+import type { CaptionSegment } from "./captions";
+
 export type Category = "SUPPORTED" | "CONTRADICTED" | "MISSING_CONTEXT" | "UNVERIFIED_DATA";
 
 export interface NoteSource {
@@ -34,7 +36,7 @@ export interface ApiError {
 export type Result<T> = { ok: true; data: T } | { ok: false; error: ApiError };
 
 export type ExtensionMessage =
-  | { type: "ANALYZE"; videoId: string }
+  | { type: "ANALYZE"; videoId: string; segments: CaptionSegment[] | null }
   | { type: "REPORT"; videoId: string; note: Note; reason: ReportReason; comment?: string };
 
 export interface CaptionInfo {

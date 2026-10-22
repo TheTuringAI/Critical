@@ -7,6 +7,8 @@ import { makeNote } from "./timeline.test";
 
 afterEach(cleanup);
 
+const SEGMENTS = [{ text: "Unemployment fell to 2 percent in 2023.", start: 1, duration: 3 }];
+
 describe("ContextBubble", () => {
   it("renders badge, quote, summary and a safe source link", () => {
     render(<ContextBubble note={makeNote("n1", 84, 98.5)} onReport={async () => true} />);
@@ -40,7 +42,7 @@ describe("OverlayApp", () => {
 
   const setup = (captions: CaptionInfo, result: Result<unknown>) => {
     const send = vi.fn(async (_m: ExtensionMessage) => result) as unknown as <T>(m: ExtensionMessage) => Promise<Result<T>>;
-    render(<OverlayApp videoId="dQw4w9WgXcQ" getCaptions={async () => captions} getVideo={() => video} send={send} />);
+    render(<OverlayApp videoId="dQw4w9WgXcQ" getCaptions={async () => captions} getTranscript={async () => SEGMENTS} getVideo={() => video} send={send} />);
     return send;
   };
 
@@ -58,7 +60,7 @@ describe("OverlayApp", () => {
     );
     const button = await screen.findByText("Add Context & Fact-Check");
     await act(async () => fireEvent.click(button));
-    expect(send).toHaveBeenCalledWith({ type: "ANALYZE", videoId: "dQw4w9WgXcQ" });
+    expect(send).toHaveBeenCalledWith({ type: "ANALYZE", videoId: "dQw4w9WgXcQ", segments: SEGMENTS });
     expect(screen.getByText("1 context note:")).toBeTruthy();
     expect(screen.queryByTestId("vco-bubble")).toBeNull();
 

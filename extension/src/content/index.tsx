@@ -1,4 +1,5 @@
 import { createRoot, type Root } from "react-dom/client";
+import type { CaptionSegment } from "../shared/captions";
 import type { CaptionInfo, ExtensionMessage, Result } from "../shared/types";
 import { OverlayApp } from "./OverlayApp";
 import css from "./styles.css?inline";
@@ -83,6 +84,26 @@ function getCaptions(videoId: string, timeoutMs = 8000): Promise<CaptionInfo> {
   });
 }
 
+/** Asks the MAIN-world bridge to read the English captions in the browser; null lets the server fetch them. */
+function getTranscript(videoId: string, timeoutMs = 15000): Promise<CaptionSegment[] | null> {
+  return new Promise((resolve) => {
+    const requestId = Math.random().toString(36).slice(2);
+    const finish = (segments: CaptionSegment[] | null) => {
+      window.removeEventListener("message", onMessage);
+      window.clearTimeout(timer);
+      resolve(segments);
+    };
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data;
+      if (event.source !== window || data?.source !== "vco-bridge" || data.type !== "TRANSCRIPT") return;
+      if (data.requestId === requestId) finish(Array.isArray(data.segments) && data.segments.length ? data.segments : null);
+    };
+    window.addEventListener("message", onMessage);
+    const timer = window.setTimeout(() => finish(null), timeoutMs);
+    window.postMessage({ source: "vco-content", type: "GET_TRANSCRIPT", videoId, requestId }, location.origin);
+  });
+}
+
 function render(): void {
   const videoId = videoIdFromLocation();
   anchorObserver?.disconnect();
@@ -98,7 +119,7 @@ function render(): void {
     ensureHost(anchor);
     if (videoId !== currentVideoId) {
       currentVideoId = videoId;
-      root!.render(<OverlayApp key={videoId} videoId={videoId} getCaptions={getCaptions} getVideo={getVideo} send={send} />);
+      root!.render(<OverlayApp key={videoId} videoId={videoId} getCaptions={getCaptions} getTranscript={getTranscript} getVideo={getVideo} send={send} />);
     }
     return true;
   };

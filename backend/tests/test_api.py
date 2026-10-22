@@ -121,3 +121,21 @@ def test_cors_allows_extension_origin():
             "/api/v1/analyze", headers={"Origin": origin, "Access-Control-Request-Method": "POST"}
         )
     assert response.headers.get("access-control-allow-origin") == origin
+
+
+def test_client_captions_skip_youtube():
+    captions = [
+        {"text": "[Music]", "start": 0.0, "duration": 1.0},
+        {"text": "I think we should all be kinder to each other.", "start": 1.0, "duration": 3.0},
+    ]
+    with make_client(FakeTranscripts(NoCaptionsError("server must not fetch"))) as client:
+        response = client.post("/api/v1/analyze", json={"video_id": "dQw4w9WgXcQ", "segments": captions})
+    assert response.status_code == 200
+    assert response.json()["notes_count"] == 0
+
+
+def test_empty_client_captions_return_422():
+    with make_client(FakeTranscripts([])) as client:
+        response = client.post("/api/v1/analyze", json={"video_id": "dQw4w9WgXcQ", "segments": []})
+    assert response.status_code == 422
+    assert response.json()["error"] == "NO_CAPTIONS_AVAILABLE"

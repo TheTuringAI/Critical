@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Iterable
 
 from youtube_transcript_api import (
     CouldNotRetrieveTranscript,
@@ -42,16 +43,19 @@ class TranscriptService:
         except CouldNotRetrieveTranscript as exc:
             raise UpstreamError(f"Could not retrieve captions: {type(exc).__name__}") from exc
 
-        segments = []
-        for snippet in fetched.snippets:
-            text = _WS.sub(" ", _NON_SPEECH.sub(" ", snippet.text)).strip()
-            if text:
-                segments.append(
-                    TranscriptSegment(text=text, start=round(snippet.start, 3), duration=round(snippet.duration, 3))
-                )
-        if not segments:
-            raise NoCaptionsError("No English captions available for this video.")
-        return segments
+        return clean_segments((s.text, s.start, s.duration) for s in fetched.snippets)
+
+
+def clean_segments(lines: Iterable[tuple[str, float, float]]) -> list[TranscriptSegment]:
+    """Drops non-speech markers and blank lines; raises NoCaptionsError if nothing is left."""
+    segments = []
+    for raw, start, duration in sorted(lines, key=lambda line: line[1]):
+        text = _WS.sub(" ", _NON_SPEECH.sub(" ", raw)).strip()
+        if text:
+            segments.append(TranscriptSegment(text=text, start=round(start, 3), duration=round(duration, 3)))
+    if not segments:
+        raise NoCaptionsError("No English captions available for this video.")
+    return segments
 
 
 def chunk_segments(segments: list[TranscriptSegment], chunk_seconds: int, overlap: int = 2) -> list[list[int]]:

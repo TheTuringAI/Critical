@@ -56,9 +56,17 @@ class Note(BaseModel):
     source: Source
 
 
+class CaptionLine(BaseModel):
+    text: str = Field(max_length=1000)
+    start: float = Field(ge=0)
+    duration: float = Field(ge=0, le=600)
+
+
 class AnalyzeRequest(BaseModel):
     video_id: str = Field(pattern=VIDEO_ID_PATTERN)
     language: str = "en"
+    # Captions read by the extension in the user's browser; the server only downloads them itself when absent.
+    segments: list[CaptionLine] | None = Field(default=None, max_length=20000)
 
     @field_validator("language")
     @classmethod

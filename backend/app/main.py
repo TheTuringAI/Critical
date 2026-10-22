@@ -13,8 +13,8 @@ from .claims import ClaimExtractor
 from .config import Settings, get_settings
 from .errors import PipelineError
 from .keenable import KeenableClient
-from .models import AnalyzeRequest, AnalyzeResponse, ReportRequest, ReportResponse
-from .transcript import TranscriptService
+from .models import AnalyzeRequest, AnalyzeResponse, CaptionLine, ReportRequest, ReportResponse
+from .transcript import TranscriptService, clean_segments
 from .verification import VerificationEngine
 
 logger = logging.getLogger("video_context_overlay")
@@ -33,8 +33,11 @@ class Pipeline:
             concurrency=settings.concurrency,
         )
 
-    async def analyze(self, video_id: str) -> AnalyzeResponse:
-        segments = await self.transcripts.fetch(video_id)
+    async def analyze(self, video_id: str, captions: list[CaptionLine] | None = None) -> AnalyzeResponse:
+        if captions is not None:
+            segments = clean_segments((c.text, c.start, c.duration) for c in captions)
+        else:
+            segments = await self.transcripts.fetch(video_id)
         claims = await self.extractor.extract(segments)
         notes = await self.verifier.verify_all(claims)
         logger.info("analyzed video=%s claims=%d notes=%d", video_id, len(claims), len(notes))
@@ -93,7 +96,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         active = request.app.state.pipeline
         if active is None:
             raise request.app.state.config_error
-        return await active.analyze(body.video_id)
+        return await active.analyze(body.video_id, body.segments)
 
     @app.post("/api/v1/report", response_model=ReportResponse, status_code=202)
     async def report(body: ReportRequest, request: Request) -> ReportResponse:

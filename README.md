@@ -14,7 +14,9 @@ backend/    Stateless verification API (Python, FastAPI)
 
 ## How it works
 
-1. **Transcript** – `youtube-transcript-api` (manual English captions preferred, auto-generated as fallback).
+1. **Transcript** – the extension reads the English captions in the user's browser (manual preferred, auto-generated
+   as fallback) and sends them with the request, so the server never contacts YouTube (YouTube blocks most
+   cloud/server IPs). Only when `segments` is omitted does the server fall back to `youtube-transcript-api`.
    No captions → HTTP 422 `NO_CAPTIONS_AVAILABLE`.
 2. **Claim extraction (rules, no LLM)** – captions are merged into sentences (or ~25-word windows for unpunctuated
    auto-captions). A sentence becomes a claim only if it contains a concrete anchor — a figure, percentage, amount,
@@ -50,7 +52,7 @@ See `.env.example` for all settings. To try the real pipeline from the command l
 
 | Endpoint | Description |
 | --- | --- |
-| `POST /api/v1/analyze` | `{"video_id": "dQw4w9WgXcQ", "language": "en"}` → `{video_id, status, notes_count, notes[]}` |
+| `POST /api/v1/analyze` | `{"video_id": "dQw4w9WgXcQ", "language": "en", "segments"?: [{"text", "start", "duration"}]}` → `{video_id, status, notes_count, notes[]}` |
 | `POST /api/v1/report` | `{"video_id", "note_id", "reason": "INACCURATE"\|"DEAD_LINK"\|"BIASED"\|"OTHER", "comment"?, "note"?}` → 202. Logged, optionally forwarded to `REPORT_WEBHOOK_URL`. |
 | `GET /healthz` | `{"status": "ok", "configured": bool}` |
 
@@ -77,7 +79,8 @@ icon). Custom servers are granted host access at runtime via optional host permi
 
 Implementation notes:
 - `page-bridge.ts` runs in the page's MAIN world to read the player's caption track list (not visible to isolated
-  content scripts) and relays only `videoId` + "has English captions".
+  content scripts). On "Add Context" it loads the English `fmt=json3` caption file in the browser (directly, or by
+  letting the player download it when YouTube requires its anti-bot token) and keeps it in tab memory only.
 - `content/index.tsx` follows YouTube SPA navigation (`yt-navigate-finish`) and mounts the UI in a shadow root between
   the player and the title, so YouTube's CSS and Tailwind don't interfere.
 - The bubble follows `timeupdate`/`seeked` on the `<video>` element, fades in/out, adapts to YouTube's `html[dark]`

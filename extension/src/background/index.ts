@@ -1,3 +1,4 @@
+import type { CaptionSegment } from "../shared/captions";
 import { getBackendUrl } from "../shared/settings";
 import type { AnalyzeResponse, ApiError, ExtensionMessage, Note, ReportReason, Result } from "../shared/types";
 
@@ -23,7 +24,7 @@ chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
 
 chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendResponse) => {
   if (message.type === "ANALYZE") {
-    analyze(message.videoId).then(sendResponse);
+    analyze(message.videoId, message.segments).then(sendResponse);
     return true;
   }
   if (message.type === "REPORT") {
@@ -33,13 +34,15 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendRe
   return false;
 });
 
-async function analyze(videoId: string): Promise<Result<AnalyzeResponse>> {
+async function analyze(videoId: string, segments: CaptionSegment[] | null): Promise<Result<AnalyzeResponse>> {
   // chrome.storage.session lives in memory only and is cleared when the browser closes.
   const key = CACHE_PREFIX + videoId;
   const cached = (await chrome.storage.session.get(key))[key] as AnalyzeResponse | undefined;
   if (cached) return { ok: true, data: cached };
 
-  const result = await postJson<AnalyzeResponse>("/api/v1/analyze", { video_id: videoId, language: "en" });
+  // Captions read in the browser are sent along; without them the server fetches them itself.
+  const body = segments?.length ? { video_id: videoId, language: "en", segments } : { video_id: videoId, language: "en" };
+  const result = await postJson<AnalyzeResponse>("/api/v1/analyze", body);
   if (result.ok) await chrome.storage.session.set({ [key]: result.data });
   return result;
 }
