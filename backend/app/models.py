@@ -67,6 +67,7 @@ class AnalyzeRequest(BaseModel):
     language: str = "en"
     # Captions read by the extension in the user's browser; the server only downloads them itself when absent.
     segments: list[CaptionLine] | None = Field(default=None, max_length=20000)
+    published_at: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
 
     @field_validator("language")
     @classmethod

@@ -22,10 +22,10 @@ class Settings:
     keenable_base_url: str = field(
         default_factory=lambda: os.environ.get("KEENABLE_BASE_URL", "https://api.keenable.ai").rstrip("/")
     )
-    search_max_results: int = field(default_factory=lambda: _env_int("SEARCH_MAX_RESULTS", 3))
+    search_max_results: int = field(default_factory=lambda: _env_int("SEARCH_MAX_RESULTS", 10))
     snippet_max_length: int = field(default_factory=lambda: _env_int("SNIPPET_MAX_LENGTH", 200))
     fetch_max_chars: int = field(default_factory=lambda: _env_int("FETCH_MAX_CHARS", 20000))
-    max_claims: int = field(default_factory=lambda: _env_int("MAX_CLAIMS", 12))
+    max_claims: int = field(default_factory=lambda: _env_int("MAX_CLAIMS", 30))
     concurrency: int = field(default_factory=lambda: _env_int("PIPELINE_CONCURRENCY", 4))
     max_note_words: int = field(default_factory=lambda: _env_int("MAX_NOTE_WORDS", 50))
     allowed_origins: list[str] = field(default_factory=lambda: _env_list("ALLOWED_ORIGINS", "https://www.youtube.com"))

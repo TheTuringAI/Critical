@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { CaptionSegment } from "../shared/captions";
+import type { Transcript } from "../shared/captions";
 import { currentNote, formatTime } from "../shared/timeline";
 import type { AnalyzeResponse, CaptionInfo, ExtensionMessage, Note, ReportReason, Result } from "../shared/types";
 import { ContextBubble } from "./ContextBubble";
@@ -17,7 +17,7 @@ export const NO_CAPTIONS_MESSAGE = "No English captions available for automated 
 interface Props {
   videoId: string;
   getCaptions: (videoId: string) => Promise<CaptionInfo>;
-  getTranscript: (videoId: string) => Promise<CaptionSegment[] | null>;
+  getTranscript: (videoId: string) => Promise<Transcript>;
   getVideo: () => HTMLVideoElement | null;
   send: <T>(message: ExtensionMessage) => Promise<Result<T>>;
 }
@@ -53,8 +53,8 @@ export function OverlayApp({ videoId, getCaptions, getTranscript, getVideo, send
 
   const analyze = async () => {
     setStatus({ kind: "loading" });
-    const segments = await getTranscript(videoId);
-    const result = await send<AnalyzeResponse>({ type: "ANALYZE", videoId, segments });
+    const { segments, published } = await getTranscript(videoId);
+    const result = await send<AnalyzeResponse>({ type: "ANALYZE", videoId, segments, published });
     if (result.ok) setStatus({ kind: "ready", notes: [...result.data.notes].sort((a, b) => a.start_time - b.start_time) });
     else if (result.error.error === "NO_CAPTIONS_AVAILABLE") setStatus({ kind: "no-captions" });
     else setStatus({ kind: "error", message: result.error.message });

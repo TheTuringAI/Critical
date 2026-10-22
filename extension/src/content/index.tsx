@@ -1,5 +1,5 @@
 import { createRoot, type Root } from "react-dom/client";
-import type { CaptionSegment } from "../shared/captions";
+import type { CaptionSegment, Transcript } from "../shared/captions";
 import type { CaptionInfo, ExtensionMessage, Result } from "../shared/types";
 import { OverlayApp } from "./OverlayApp";
 import css from "./styles.css?inline";
@@ -85,21 +85,23 @@ function getCaptions(videoId: string, timeoutMs = 8000): Promise<CaptionInfo> {
 }
 
 /** Asks the MAIN-world bridge to read the English captions in the browser; null lets the server fetch them. */
-function getTranscript(videoId: string, timeoutMs = 15000): Promise<CaptionSegment[] | null> {
+function getTranscript(videoId: string, timeoutMs = 15000): Promise<Transcript> {
   return new Promise((resolve) => {
     const requestId = Math.random().toString(36).slice(2);
-    const finish = (segments: CaptionSegment[] | null) => {
+    const finish = (segments: CaptionSegment[] | null, published: string | null) => {
       window.removeEventListener("message", onMessage);
       window.clearTimeout(timer);
-      resolve(segments);
+      resolve({ segments, published });
     };
     const onMessage = (event: MessageEvent) => {
       const data = event.data;
       if (event.source !== window || data?.source !== "vco-bridge" || data.type !== "TRANSCRIPT") return;
-      if (data.requestId === requestId) finish(Array.isArray(data.segments) && data.segments.length ? data.segments : null);
+      if (data.requestId !== requestId) return;
+      const segments = Array.isArray(data.segments) && data.segments.length ? data.segments : null;
+      finish(segments, typeof data.published === "string" ? data.published : null);
     };
     window.addEventListener("message", onMessage);
-    const timer = window.setTimeout(() => finish(null), timeoutMs);
+    const timer = window.setTimeout(() => finish(null, null), timeoutMs);
     window.postMessage({ source: "vco-content", type: "GET_TRANSCRIPT", videoId, requestId }, location.origin);
   });
 }

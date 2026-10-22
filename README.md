@@ -21,10 +21,10 @@ backend/    Stateless verification API (Python, FastAPI)
 2. **Claim extraction (rules, no LLM)** – captions are merged into sentences (or ~25-word windows for unpunctuated
    auto-captions). A sentence becomes a claim only if it contains a concrete anchor — a figure, percentage, amount,
    year, law/bill, or attribution ("according to…") — and no opinion/speculation marker ("I think", "should",
-   "might", questions…). The best non-overlapping candidates (`MAX_CLAIMS`, default 12) keep their exact timestamps.
-3. **Evidence (Keenable search)** – `POST /v1/search` with `max_results=3`, `snippet_max_length=200` (Keenable's
+   "might", questions…). The best non-overlapping candidates (`MAX_CLAIMS`, default 30) keep their exact timestamps.
+3. **Evidence (Keenable search)** – `POST /v1/search` with `max_results=10`, `snippet_max_length=200` (Keenable's
    minimum is 180); social/video sites are dropped, institutional domains (`.gov`, `.edu`, `.int`, statistical
-   agencies…) ranked first.
+   agencies…) ranked first. Only institutional domains and an allowlist of established newsrooms, fact-checkers, encyclopedias and non-partisan research bodies are ever cited (`REPUTABLE_DOMAINS` in `verification.py`); pages titled as transcripts are skipped. The extension sends the video's publish date (`published_at`), which is given to Keenable and used to drop evidence about later years.
 4. **Verdict & summary (Keenable fetch with `prompt`)** – for the top 1–2 sources, `GET /v1/fetch?url=…&prompt=…`
    asks Keenable to read the page and reply `VERDICT` (`SUPPORTED`, `CONTRADICTED`, `MISSING_CONTEXT`,
    `UNVERIFIED_DATA` or `ABSTAIN`), a ≤40-word neutral `SUMMARY`, a verbatim `QUOTE` and the `PUBLISHER`.

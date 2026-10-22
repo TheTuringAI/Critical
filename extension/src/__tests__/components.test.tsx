@@ -42,7 +42,7 @@ describe("OverlayApp", () => {
 
   const setup = (captions: CaptionInfo, result: Result<unknown>) => {
     const send = vi.fn(async (_m: ExtensionMessage) => result) as unknown as <T>(m: ExtensionMessage) => Promise<Result<T>>;
-    render(<OverlayApp videoId="dQw4w9WgXcQ" getCaptions={async () => captions} getTranscript={async () => SEGMENTS} getVideo={() => video} send={send} />);
+    render(<OverlayApp videoId="dQw4w9WgXcQ" getCaptions={async () => captions} getTranscript={async () => ({ segments: SEGMENTS, published: "2024-03-07" })} getVideo={() => video} send={send} />);
     return send;
   };
 
@@ -60,7 +60,7 @@ describe("OverlayApp", () => {
     );
     const button = await screen.findByText("Add Context & Fact-Check");
     await act(async () => fireEvent.click(button));
-    expect(send).toHaveBeenCalledWith({ type: "ANALYZE", videoId: "dQw4w9WgXcQ", segments: SEGMENTS });
+    expect(send).toHaveBeenCalledWith({ type: "ANALYZE", videoId: "dQw4w9WgXcQ", segments: SEGMENTS, published: "2024-03-07" });
     expect(screen.getByText("1 context note:")).toBeTruthy();
     expect(screen.queryByTestId("vco-bubble")).toBeNull();
 

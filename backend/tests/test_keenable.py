@@ -64,3 +64,16 @@ async def test_invalid_key_raises_configuration_error():
 def test_missing_key_raises():
     with pytest.raises(ConfigurationError):
         KeenableClient("")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_rate_limited_requests_are_retried_once():
+    route = respx.post(f"{BASE}/v1/search").mock(
+        side_effect=[httpx.Response(429), httpx.Response(200, json={"results": [{"url": "https://bls.gov/a"}]})]
+    )
+    client = KeenableClient("keen_test", BASE)
+    client.retry_delay = 0
+    hits = await client.search_claims("unemployment 2023")
+    await client.aclose()
+    assert route.call_count == 2 and [h.url for h in hits] == ["https://bls.gov/a"]

@@ -6,6 +6,7 @@ import { json3ToSegments, pickEnglishTrack, type CaptionSegment, type CaptionTra
 interface PlayerResponse {
   videoDetails?: { videoId?: string };
   captions?: { playerCaptionsTracklistRenderer?: { captionTracks?: CaptionTrack[] } };
+  microformat?: { playerMicroformatRenderer?: { publishDate?: string; uploadDate?: string } };
 }
 type PlayerElement = HTMLElement & {
   getPlayerResponse?: () => PlayerResponse | undefined;
@@ -106,6 +107,12 @@ async function loadTranscript(videoId: string): Promise<CaptionSegment[] | null>
   return (await fetchTrack(track)) ?? (await loadThroughPlayer(videoId, track));
 }
 
+function publishDate(): string | null {
+  const meta = readPlayerResponse()?.microformat?.playerMicroformatRenderer;
+  const date = meta?.publishDate ?? meta?.uploadDate ?? "";
+  return /^\d{4}-\d{2}-\d{2}/.test(date) ? date.slice(0, 10) : null;
+}
+
 function publish(): void {
   const response = readPlayerResponse();
   window.postMessage(
@@ -126,7 +133,10 @@ window.addEventListener("message", (event) => {
   if (event.data.type === "GET_TRANSCRIPT") {
     const { videoId, requestId } = event.data as { videoId: string; requestId: string };
     loadTranscript(videoId).then((segments) =>
-      window.postMessage({ source: "vco-bridge", type: "TRANSCRIPT", requestId, segments }, window.location.origin),
+      window.postMessage(
+        { source: "vco-bridge", type: "TRANSCRIPT", requestId, segments, published: publishDate() },
+        window.location.origin,
+      ),
     );
   }
 });

@@ -5,6 +5,7 @@ import logging
 import re
 from urllib.parse import urlparse
 
+from .claims import _STOPWORDS
 from .keenable import KeenableClient
 from .models import Category, Claim, Note, SearchHit, Source
 
@@ -44,6 +45,71 @@ INSTITUTIONAL_DOMAINS = (
     "pewresearch.org",
     "ourworldindata.org",
 )
+# Established newsrooms, fact-checkers, encyclopedias and non-partisan research bodies. Pages from anywhere else are
+# never cited: low-authority sites are where tangential or wrong "evidence" came from in benchmarks.
+REPUTABLE_DOMAINS = (
+    "afp.com",
+    "bbc.com",
+    "bbc.co.uk",
+    "npr.org",
+    "pbs.org",
+    "nytimes.com",
+    "washingtonpost.com",
+    "wsj.com",
+    "theguardian.com",
+    "ft.com",
+    "economist.com",
+    "bloomberg.com",
+    "cnbc.com",
+    "cnn.com",
+    "cbsnews.com",
+    "nbcnews.com",
+    "abcnews.go.com",
+    "usatoday.com",
+    "latimes.com",
+    "time.com",
+    "axios.com",
+    "politico.com",
+    "thehill.com",
+    "aljazeera.com",
+    "dw.com",
+    "france24.com",
+    "lemonde.fr",
+    "factcheck.org",
+    "politifact.com",
+    "snopes.com",
+    "fullfact.org",
+    "wikipedia.org",
+    "crfb.org",
+    "kff.org",
+    "rand.org",
+    "urban.org",
+    "taxpolicycenter.org",
+    "bipartisanpolicy.org",
+    "brookings.edu",
+    "cfr.org",
+    "statista.com",
+    "usafacts.org",
+    "mayoclinic.org",
+    "clevelandclinic.org",
+    "cancer.org",
+    "heart.org",
+    "diabetes.org",
+    "thelancet.com",
+    "bmj.com",
+    "nejm.org",
+    "jamanetwork.com",
+    "sciencedirect.com",
+    "springer.com",
+    "iea.org",
+    "ipcc.ch",
+    "nasa.gov",
+    "noaa.gov",
+    "unesco.org",
+    "unicef.org",
+    "wto.org",
+    "icj-cij.org",
+)
 
 logger = logging.getLogger("vco.verification")
 
@@ -58,12 +124,17 @@ VERDICT_PROMPT = (
     "PUBLISHER: the organization that published this page.\n"
     "Meanings: SUPPORTED = the page confirms the claim; CONTRADICTED = the page clearly shows it is wrong; "
     "MISSING_CONTEXT = accurate but omits context that changes its meaning; UNVERIFIED_DATA = the page is on topic "
-    "but has no data confirming the specific figure. Reply ABSTAIN if the page does not directly address the claim, "
+    "but has no data confirming the specific figure. If the speaker's words mix several statements, judge only the "
+    "main factual figure or statement that this page addresses. Reply ABSTAIN if the page does not directly "
+    "address it, "
     "is opinion or partisan, or the data is ambiguous. Also reply ABSTAIN if the page is a transcript, summary or "
     "news report of this same talk, video or speech (it cannot independently verify the speaker). Never describe "
     "the speaker or what the page does not contain. The page must cover the same event, place and time period as the "
     "claim; never compare against figures from a different year or event. Abstaining is always acceptable."
 )
+
+DATE_CONTEXT = "The video was published on {date}; judge the claim as of that date, not with data from later years.\n"
+_YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
 
 _FIELD = re.compile(
     r"^\s*\**(VERDICT|SUMMARY|QUOTE|PUBLISHER)\**\s*:\s*\**\s*(.*?)\s*\**\s*$", re.IGNORECASE | re.MULTILINE
@@ -87,13 +158,14 @@ def authority_score(url: str) -> int:
         return -1
     if host.endswith(INSTITUTIONAL_SUFFIXES) or _matches(host, INSTITUTIONAL_DOMAINS):
         return 2
-    if host.endswith(".org"):
+    if _matches(host, REPUTABLE_DOMAINS):
         return 1
     return 0
 
 
 def rank_hits(hits: list[SearchHit]) -> list[SearchHit]:
-    eligible = [hit for hit in hits if authority_score(hit.url) >= 0]
+    # Transcripts of the talk being checked can only echo the speaker.
+    eligible = [hit for hit in hits if authority_score(hit.url) >= 1 and "transcript" not in (hit.title or "").lower()]
     return sorted(eligible, key=lambda hit: -authority_score(hit.url))
 
 
@@ -145,12 +217,29 @@ _PAGE_REFERENCE = re.compile(
 )
 
 
+# Units and filler shared by unrelated figures ("$500 million" in two different stories).
+_GENERIC_TERMS = {"percent", "million", "billion", "trillion", "thousand", "year", "years", "people", "times"}
+
+
+def _shared_terms(claim: Claim, text: str) -> set[str]:
+    claim_terms = {
+        t
+        for t in _tokens(claim.quote)
+        if t not in _STOPWORDS and t not in _GENERIC_TERMS and (len(t) > 3 or any(ch.isdigit() for ch in t))
+    }
+    return claim_terms & set(_tokens(text))
+
+
 def is_relevant(claim: Claim, summary: str, citation: str) -> bool:
-    """The summary must be about the claim: it has to share a figure or two key terms with it."""
-    claim_terms = {t for t in _tokens(claim.search_query) if len(t) > 3 or any(ch.isdigit() for ch in t)}
-    evidence_terms = set(_tokens(f"{summary} {citation}"))
-    shared = claim_terms & evidence_terms
-    return any(any(ch.isdigit() for ch in t) for t in shared) or len(shared) >= 2
+    """The summary must be about the claim: a shared figure plus a key term, or three key terms."""
+    shared = _shared_terms(claim, f"{summary} {citation}")
+    figures = {t for t in shared if any(ch.isdigit() for ch in t)}
+    return (bool(figures) and len(shared - figures) >= 1) or len(shared - figures) >= 3
+
+
+def postdates(published: str | None, summary: str) -> bool:
+    """Evidence about years after the video was published cannot check what the speaker said at the time."""
+    return bool(published) and any(int(year) > int(published[:4]) for year in _YEAR.findall(summary))
 
 
 def is_circular(claim: Claim, citation: str) -> bool:
@@ -173,11 +262,11 @@ class VerificationEngine:
     def __init__(
         self,
         keenable: KeenableClient,
-        max_results: int = 3,
+        max_results: int = 10,
         snippet_max_length: int = 200,
         fetch_max_chars: int = 20000,
         max_words: int = 50,
-        max_fetches: int = 2,
+        max_fetches: int = 3,
         concurrency: int = 4,
     ):
         self._keenable = keenable
@@ -188,31 +277,36 @@ class VerificationEngine:
         self._max_fetches = max_fetches
         self._semaphore = asyncio.Semaphore(concurrency)
 
-    async def verify_all(self, claims: list[Claim]) -> list[Note]:
-        results = await asyncio.gather(*(self.verify(claim) for claim in claims), return_exceptions=True)
+    async def verify_all(self, claims: list[Claim], published: str | None = None) -> list[Note]:
+        results = await asyncio.gather(*(self.verify(claim, published) for claim in claims), return_exceptions=True)
         notes = [result for result in results if isinstance(result, Note)]
         for index, note in enumerate(notes, start=1):
             note.note_id = f"note_{index:03d}"
         return notes
 
-    async def verify(self, claim: Claim) -> Note | None:
+    async def verify(self, claim: Claim, published: str | None = None) -> Note | None:
         async with self._semaphore:
             hits = rank_hits(
                 await self._keenable.search_claims(claim.search_query, self._max_results, self._snippet_max_length)
             )
+            # "No data on this figure" is only a fallback when no source gives a real verdict.
+            fallback = None
             for hit in hits[: self._max_fetches]:
-                note = await self._check_source(claim, hit)
-                if note:
+                note = await self._check_source(claim, hit, published)
+                if note and note.category != Category.UNVERIFIED_DATA:
                     return note
-            return None
+                fallback = fallback or note
+            return fallback
 
     @staticmethod
     def _reject(claim: Claim, hit: SearchHit, reason: str) -> None:
         logger.info("%s: no note from %s (%s)", claim.claim_id, domain_of(hit.url), reason)
         return None
 
-    async def _check_source(self, claim: Claim, hit: SearchHit) -> Note | None:
+    async def _check_source(self, claim: Claim, hit: SearchHit, published: str | None = None) -> Note | None:
         prompt = VERDICT_PROMPT.format(claim=claim.quote[:600], max_words=min(self._max_words, 40))
+        if published:
+            prompt = DATE_CONTEXT.format(date=published) + prompt
         page, answer = await asyncio.gather(
             self._keenable.fetch_source_markdown(hit.url, self._fetch_max_chars),
             self._keenable.fetch_source_markdown(hit.url, self._fetch_max_chars, prompt=prompt),
@@ -223,7 +317,7 @@ class VerificationEngine:
         try:
             category = Category(fields.get("VERDICT", "").upper().replace(" ", "_"))
         except ValueError:
-            return self._reject(claim, hit, f"verdict {fields.get('VERDICT', 'missing')!r}")
+            return self._reject(claim, hit, f"verdict {fields.get('VERDICT', 'missing')!r}: {answer[:120]!r}")
         citation = " ".join(fields.get("QUOTE", "").split())
         summary = enforce_brevity(fields.get("SUMMARY", ""), self._max_words)
         if not summary:
@@ -234,8 +328,12 @@ class VerificationEngine:
             return self._reject(claim, hit, "summary unrelated to claim")
         if _SPEAKER_TALK.search(summary):
             return self._reject(claim, hit, f"summary about the video: {summary}")
-        if category != Category.UNVERIFIED_DATA and _NON_ANSWER.search(summary):
+        if _NON_ANSWER.search(summary) and (
+            category != Category.UNVERIFIED_DATA or len(_shared_terms(claim, summary)) < 3
+        ):
             return self._reject(claim, hit, f"non-answer summary: {summary}")
+        if postdates(published, summary):
+            return self._reject(claim, hit, f"evidence postdates the video: {summary}")
         summary = _PAGE_REFERENCE.sub("this source", summary)
         summary = summary[:1].upper() + summary[1:]
         if is_circular(claim, citation):

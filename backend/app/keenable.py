@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+
 import httpx
 
 from .errors import ConfigurationError, UpstreamError
 from .models import SearchHit
+
+logger = logging.getLogger("vco.keenable")
+_RETRY_STATUS = {429, 502, 503, 504}
 
 
 class KeenableClient:
@@ -20,6 +26,18 @@ class KeenableClient:
         self._api_key = api_key
         self._client = client or httpx.AsyncClient(timeout=timeout)
         self._owns_client = client is None
+        self.retry_delay = 1.0
+
+    async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+        """Retries once on rate limits and transient failures, which otherwise silently cost notes."""
+        try:
+            response = await self._client.request(method, url, **kwargs)
+            if response.status_code not in _RETRY_STATUS:
+                return response
+        except httpx.TransportError:
+            pass
+        await asyncio.sleep(self.retry_delay)
+        return await self._client.request(method, url, **kwargs)
 
     async def aclose(self) -> None:
         if self._owns_client:
@@ -34,7 +52,7 @@ class KeenableClient:
         }
         headers = {"X-API-Key": self._api_key, "Content-Type": "application/json"}
         try:
-            response = await self._client.post(f"{self._base_url}/v1/search", json=payload, headers=headers)
+            response = await self._request("POST", f"{self._base_url}/v1/search", json=payload, headers=headers)
         except httpx.HTTPError as exc:
             raise UpstreamError(f"Keenable search failed: {type(exc).__name__}") from exc
         if response.status_code in (401, 403):
@@ -64,15 +82,18 @@ class KeenableClient:
         if prompt:
             params["prompt"] = prompt[:2000]
         try:
-            response = await self._client.get(
+            response = await self._request(
+                "GET",
                 f"{self._base_url}/v1/fetch",
                 params=params,
                 headers={"X-API-Key": self._api_key},
             )
-        except httpx.HTTPError:
+        except httpx.HTTPError as exc:
+            logger.info("Keenable fetch error for %s: %s", url, type(exc).__name__)
             return None
         if response.status_code == 401:
             raise ConfigurationError("Keenable rejected the API key.")
         if response.status_code >= 400:
+            logger.info("Keenable fetch %s for %s: %s", response.status_code, url, response.text[:120])
             return None
         return response.json().get("content") or None

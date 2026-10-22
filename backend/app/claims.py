@@ -58,6 +58,10 @@ def _score(text: str) -> int:
     return 0
 
 
+# Auto-captions drop thousands separators: "800 000 jobs" -> "800,000 jobs".
+_DIGIT_GROUPS = re.compile(r"\b(\d{1,3}) (\d{3})\b")
+
+
 def _anchor_offset(text: str) -> int:
     """Character offset of the first checkable anchor (figure, multiplier, statistic...)."""
     patterns = (_NUMBER, _WORD_NUMBER, _MONEY, _MULTIPLIER, _STATISTIC, _YEAR, _LEGAL, _ATTRIBUTION)
@@ -139,7 +143,7 @@ class ClaimExtractor:
     async def extract(self, segments: list[TranscriptSegment]) -> list[Claim]:
         candidates = []
         for sentence, start, end in split_sentences(segments):
-            text = _claim_focus(sentence)
+            text = _DIGIT_GROUPS.sub(r"\1,\2", _claim_focus(sentence))
             words = len(text.split())
             score = _score(text)
             if score and self._min_words <= words <= self._max_words:

@@ -6,6 +6,7 @@ from app.verification import (
     is_circular,
     is_relevant,
     parse_verdict,
+    postdates,
     rank_hits,
 )
 
@@ -25,7 +26,14 @@ def test_rank_hits_drops_excluded_and_orders_by_authority():
         SearchHit(url="https://reddit.com/r/x"),
         SearchHit(url="https://www.bls.gov/a"),
     ]
-    assert [h.url for h in rank_hits(hits)] == ["https://www.bls.gov/a", "https://blog.example.com/a"]
+    hits.append(SearchHit(url="https://www.reuters.com/b"))
+    hits.append(SearchHit(url="https://en.wikipedia.org/wiki/Jobs"))
+    hits.append(SearchHit(url="https://rev.com/x", title="Debate transcript"))
+    assert [h.url for h in rank_hits(hits)] == [
+        "https://www.bls.gov/a",
+        "https://www.reuters.com/b",
+        "https://en.wikipedia.org/wiki/Jobs",
+    ]
 
 
 def test_enforce_brevity_keeps_max_two_sentences_within_word_limit():
@@ -65,7 +73,8 @@ CLAIM = Claim(
 
 
 def test_relevance_requires_shared_figure_or_terms():
-    assert is_relevant(CLAIM, "BLS data shows a rate of 3.4 percent.", "The rate was 3.4 percent.")
+    assert is_relevant(CLAIM, "BLS data shows unemployment was 3.4 percent.", "The rate was 3.4 percent.")
+    assert not is_relevant(CLAIM, "Inflation was 3.4 percent.", "Prices rose 3.4 percent.")
     assert not is_relevant(CLAIM, "A list of sovereign states in 1963.", "Countries are listed.")
 
 
@@ -81,3 +90,20 @@ def test_non_answer_patterns():
     assert _SPEAKER_TALK.search("The speaker claims rates rose.")
     assert not _SPEAKER_TALK.search("The CDC states that smoking causes lung cancer.")
     assert not _NON_ANSWER.search("BLS data shows 3.4 percent in January 2023.")
+
+
+def test_postdates_rejects_evidence_from_after_the_video():
+    assert postdates("2024-03-07", "USAFacts records show wages grew 3.6% from September 2025 to September 2026.")
+    assert not postdates("2024-03-07", "BLS data shows unemployment was 3.7% in 2023.")
+    assert not postdates(None, "Data from 2026.")
+
+
+def test_shared_amount_alone_is_not_relevant():
+    claim = Claim(
+        claim_id="claim_001",
+        quote="they raised $500 million in a 10-year period and we would wipe out the debt",
+        start_time=0,
+        end_time=5,
+        search_query="raised $500 million debt",
+    )
+    assert not is_relevant(claim, "Bloomberg reports Batista secured $500 million from investors.", "He secured funds.")

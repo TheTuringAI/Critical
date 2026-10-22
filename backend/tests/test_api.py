@@ -139,3 +139,15 @@ def test_empty_client_captions_return_422():
         response = client.post("/api/v1/analyze", json={"video_id": "dQw4w9WgXcQ", "segments": []})
     assert response.status_code == 422
     assert response.json()["error"] == "NO_CAPTIONS_AVAILABLE"
+
+
+@respx.mock
+def test_publish_date_is_given_to_keenable(segments):
+    _, fetch = mock_keenable()
+    with make_client(FakeTranscripts(segments)) as client:
+        body = {"video_id": "dQw4w9WgXcQ", "published_at": "2023-05-01"}
+        assert client.post("/api/v1/analyze", json=body).status_code == 200
+        bad = client.post("/api/v1/analyze", json={"video_id": "dQw4w9WgXcQ", "published_at": "yesterday"})
+    assert bad.status_code == 400
+    prompts = [call.request.url.params.get("prompt") for call in fetch.calls if call.request.url.params.get("prompt")]
+    assert prompts and all("published on 2023-05-01" in p for p in prompts)

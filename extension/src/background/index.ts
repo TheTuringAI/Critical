@@ -24,7 +24,7 @@ chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
 
 chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendResponse) => {
   if (message.type === "ANALYZE") {
-    analyze(message.videoId, message.segments).then(sendResponse);
+    analyze(message.videoId, message.segments, message.published).then(sendResponse);
     return true;
   }
   if (message.type === "REPORT") {
@@ -34,14 +34,21 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendRe
   return false;
 });
 
-async function analyze(videoId: string, segments: CaptionSegment[] | null): Promise<Result<AnalyzeResponse>> {
+async function analyze(
+  videoId: string,
+  segments: CaptionSegment[] | null,
+  published: string | null,
+): Promise<Result<AnalyzeResponse>> {
   // chrome.storage.session lives in memory only and is cleared when the browser closes.
   const key = CACHE_PREFIX + videoId;
   const cached = (await chrome.storage.session.get(key))[key] as AnalyzeResponse | undefined;
   if (cached) return { ok: true, data: cached };
 
   // Captions read in the browser are sent along; without them the server fetches them itself.
-  const body = segments?.length ? { video_id: videoId, language: "en", segments } : { video_id: videoId, language: "en" };
+  // The publish date stops sources from later years being used to check what was said at the time.
+  const body: Record<string, unknown> = { video_id: videoId, language: "en" };
+  if (segments?.length) body.segments = segments;
+  if (published) body.published_at = published;
   const result = await postJson<AnalyzeResponse>("/api/v1/analyze", body);
   if (result.ok) await chrome.storage.session.set({ [key]: result.data });
   return result;

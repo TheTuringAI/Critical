@@ -4,6 +4,12 @@ export interface CaptionSegment {
   duration: number;
 }
 
+/** Captions read in the browser plus the video's publish date (YYYY-MM-DD); null fields fall back to the server. */
+export interface Transcript {
+  segments: CaptionSegment[] | null;
+  published: string | null;
+}
+
 export interface Json3Captions {
   events?: { tStartMs?: number; dDurationMs?: number; segs?: { utf8?: string }[] }[];
 }

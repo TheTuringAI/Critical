@@ -36,7 +36,7 @@ export interface ApiError {
 export type Result<T> = { ok: true; data: T } | { ok: false; error: ApiError };
 
 export type ExtensionMessage =
-  | { type: "ANALYZE"; videoId: string; segments: CaptionSegment[] | null }
+  | { type: "ANALYZE"; videoId: string; segments: CaptionSegment[] | null; published: string | null }
   | { type: "REPORT"; videoId: string; note: Note; reason: ReportReason; comment?: string };
 
 export interface CaptionInfo {
