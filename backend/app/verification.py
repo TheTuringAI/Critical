@@ -114,26 +114,23 @@ REPUTABLE_DOMAINS = (
 logger = logging.getLogger("vco.verification")
 
 VERDICT_PROMPT = (
-    'You are an impartial fact-checker. A speaker in a video said: "{claim}"\n'
-    "Using ONLY the content of this page, reply in exactly this format and nothing else:\n"
-    "VERDICT: one of SUPPORTED, CONTRADICTED, MISSING_CONTEXT, UNVERIFIED_DATA, ABSTAIN\n"
-    "SUMMARY: 1 to 2 neutral, third-person sentences, at most {max_words} words in total, naming the source and "
-    'stating exact figures (e.g. "Federal Reserve records indicate rates rose 0.75% in July 2022, not 1.5% as '
-    'stated."). No judgmental words such as misleading, false or lie.\n'
-    "QUOTE: one sentence copied verbatim from the page (max 30 words) that supports the summary.\n"
-    "PUBLISHER: the organization that published this page.\n"
-    "Meanings: SUPPORTED = the page confirms the claim; CONTRADICTED = the page clearly shows it is wrong; "
-    "MISSING_CONTEXT = accurate but omits context that changes its meaning; UNVERIFIED_DATA = the page is on topic "
-    "but has no data confirming the specific figure. If the speaker's words mix several statements, judge only the "
-    "main factual figure or statement that this page addresses. Reply ABSTAIN if the page does not directly "
-    "address it, "
-    "is opinion or partisan, or the data is ambiguous. Also reply ABSTAIN if the page is a transcript, summary or "
-    "news report of this same talk, video or speech (it cannot independently verify the speaker). Never describe "
-    "the speaker or what the page does not contain. The page must cover the same event, place and time period as the "
-    "claim; never compare against figures from a different year or event. Abstaining is always acceptable."
+    'Fact-check this statement from a video using ONLY this page: "{claim}"\n'
+    "Reply in exactly this format:\n"
+    "VERDICT: SUPPORTED, CONTRADICTED, MISSING_CONTEXT, UNVERIFIED_DATA or ABSTAIN\n"
+    "SUMMARY: 1-2 neutral third-person sentences, max {max_words} words, naming the source, its exact figures and "
+    "their year "
+    '(e.g. "Federal Reserve records show rates rose 0.75% in July 2022, not 1.5%."). No words like misleading, '
+    "false or lie.\n"
+    "QUOTE: one sentence copied verbatim from the page (max 30 words) backing the summary.\n"
+    "PUBLISHER: the organization behind the page.\n"
+    "SUPPORTED = the page confirms it; CONTRADICTED = the page shows it is wrong; MISSING_CONTEXT = true but the "
+    "page adds context that changes its meaning; UNVERIFIED_DATA = on topic but lacks the specific figure. If the "
+    "statement mixes several points, judge the main figure this page addresses. ABSTAIN if the page does not "
+    "directly address it, is opinion or partisan, is a transcript or report of this same speech, or covers a "
+    "different event, place or period. Never describe the speaker or what the page lacks."
 )
 
-DATE_CONTEXT = "The video was published on {date}; judge the claim as of that date, not with data from later years.\n"
+DATE_CONTEXT = "Video date: {date}; use only data available by then.\n"
 _YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
 
 _FIELD = re.compile(
@@ -253,6 +250,17 @@ def usefulness(claim: Claim, category: Category, summary: str, citation: str, ur
     return score + has_figure + (authority_score(url) == 2)
 
 
+def is_stale(published: str | None, claim: Claim, summary: str, max_age: int = 3) -> bool:
+    """Figures from well before the video (e.g. 2017 overdose deaths against a 2024 claim) cannot contradict or
+    confirm it, unless the speaker was talking about that period."""
+    if not published:
+        return False
+    years = [int(y) for y in _YEAR.findall(summary)]
+    if not years or _YEAR.search(claim.quote):
+        return False
+    return max(years) < int(published[:4]) - max_age
+
+
 def postdates(published: str | None, summary: str) -> bool:
     """Evidence about years after the video was published cannot check what the speaker said at the time."""
     return bool(published) and any(int(year) > int(published[:4]) for year in _YEAR.findall(summary))
@@ -284,7 +292,7 @@ class VerificationEngine:
         max_words: int = 50,
         max_fetches: int = 3,
         concurrency: int = 4,
-        min_usefulness: int = 4,
+        min_usefulness: int = 3,
     ):
         self._keenable = keenable
         self._max_results = max_results
@@ -325,11 +333,9 @@ class VerificationEngine:
         prompt = VERDICT_PROMPT.format(claim=claim.quote[:600], max_words=min(self._max_words, 40))
         if published:
             prompt = DATE_CONTEXT.format(date=published) + prompt
-        page, answer = await asyncio.gather(
-            self._keenable.fetch_source_markdown(hit.url, self._fetch_max_chars),
-            self._keenable.fetch_source_markdown(hit.url, self._fetch_max_chars, prompt=prompt),
-        )
-        if not page or not answer:
+        # Prompted fetch first; the plain page, needed only to ground the quote, is fetched once there is a verdict.
+        answer = await self._keenable.fetch_source_markdown(hit.url, self._fetch_max_chars, prompt=prompt)
+        if not answer:
             return self._reject(claim, hit, "fetch failed")
         fields = parse_verdict(answer)
         try:
@@ -340,8 +346,6 @@ class VerificationEngine:
         summary = enforce_brevity(fields.get("SUMMARY", ""), self._max_words)
         if not summary:
             return self._reject(claim, hit, "empty summary")
-        if not citation_is_grounded(citation, page):
-            return self._reject(claim, hit, "quote not found on page")
         if not is_relevant(claim, summary, citation):
             return self._reject(claim, hit, "summary unrelated to claim")
         if _SPEAKER_TALK.search(summary):
@@ -350,16 +354,24 @@ class VerificationEngine:
             return self._reject(claim, hit, f"non-answer summary: {summary}")
         if postdates(published, summary):
             return self._reject(claim, hit, f"evidence postdates the video: {summary}")
-        summary = _PAGE_REFERENCE.sub("this source", summary)
-        summary = summary[:1].upper() + summary[1:]
+        if category != Category.MISSING_CONTEXT and is_stale(published, claim, summary):
+            return self._reject(claim, hit, f"evidence predates the video: {summary}")
         if is_circular(claim, citation):
             return self._reject(claim, hit, "source repeats the speaker")
         score = usefulness(claim, category, summary, citation, hit.url)
         if score < self._min_usefulness:
             return self._reject(claim, hit, f"not useful enough ({score}): {summary}")
+        page = await self._keenable.fetch_source_markdown(hit.url, self._fetch_max_chars)
+        if not page:
+            return self._reject(claim, hit, "fetch failed")
+        if not citation_is_grounded(citation, page):
+            return self._reject(claim, hit, "quote not found on page")
+        summary = _PAGE_REFERENCE.sub("this source", summary)
+        summary = summary[:1].upper() + summary[1:]
         publisher = fields.get("PUBLISHER", "")
         if not publisher or publisher.lower() not in page.lower():
             publisher = domain_of(hit.url)
+        logger.info("%s: note from %s (%s, usefulness %d)", claim.claim_id, domain_of(hit.url), category.value, score)
         return Note(
             note_id="",
             start_time=claim.start_time,

@@ -23,6 +23,7 @@ logger = logging.getLogger("video_context_overlay")
 class Pipeline:
     def __init__(self, settings: Settings, transcripts: TranscriptService, keenable: KeenableClient):
         self.transcripts = transcripts
+        self.keenable = keenable
         self.extractor = ClaimExtractor(settings.max_claims)
         self.verifier = VerificationEngine(
             keenable,
@@ -41,9 +42,17 @@ class Pipeline:
             segments = clean_segments((c.text, c.start, c.duration) for c in captions)
         else:
             segments = await self.transcripts.fetch(video_id)
+        requests_before, credits_before = self.keenable.requests, self.keenable.credits
         claims = await self.extractor.extract(segments)
         notes = await self.verifier.verify_all(claims, published)
-        logger.info("analyzed video=%s claims=%d notes=%d", video_id, len(claims), len(notes))
+        logger.info(
+            "analyzed video=%s claims=%d notes=%d keenable_requests=%d credits=%.2f",
+            video_id,
+            len(claims),
+            len(notes),
+            self.keenable.requests - requests_before,
+            self.keenable.credits - credits_before,
+        )
         return AnalyzeResponse(video_id=video_id, notes_count=len(notes), notes=notes)
 
 

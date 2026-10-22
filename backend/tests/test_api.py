@@ -150,4 +150,35 @@ def test_publish_date_is_given_to_keenable(segments):
         bad = client.post("/api/v1/analyze", json={"video_id": "dQw4w9WgXcQ", "published_at": "yesterday"})
     assert bad.status_code == 400
     prompts = [call.request.url.params.get("prompt") for call in fetch.calls if call.request.url.params.get("prompt")]
-    assert prompts and all("published on 2023-05-01" in p for p in prompts)
+    assert prompts and all("Video date: 2023-05-01" in p for p in prompts)
+
+
+@respx.mock
+def test_abstaining_sources_cost_a_single_fetch():
+    search, fetch = mock_keenable()
+    lines = [
+        TranscriptSegment(
+            text="Last year unemployment rose to 9 percent across the whole country.", start=0, duration=5
+        )
+    ]
+    with make_client(FakeTranscripts(lines)) as client:
+        response = client.post("/api/v1/analyze", json={"video_id": "dQw4w9WgXcQ", "language": "en"})
+
+    assert response.status_code == 200 and response.json()["notes_count"] == 0
+    assert fetch.calls and all(call.request.url.params.get("prompt") for call in fetch.calls)
+
+
+@respx.mock
+def test_keenable_usage_is_counted():
+    usage = {"sku": "search.pro", "amount": 1, "credits": 1.5, "paid": True}
+    respx.post(f"{BASE}/v1/search").mock(
+        return_value=httpx.Response(200, json={"query": "q", "mode": "pro", "results": [], "usage": usage})
+    )
+    keenable = KeenableClient("keen_test", BASE)
+    pipeline = Pipeline(Settings(keenable_api_key="keen_test"), FakeTranscripts([]), keenable)
+    with TestClient(create_app(Settings(keenable_api_key="keen_test"), pipeline)) as client:
+        lines = [
+            {"text": "Unemployment rose to 9 percent last year across the whole country.", "start": 0, "duration": 5}
+        ]
+        client.post("/api/v1/analyze", json={"video_id": "dQw4w9WgXcQ", "language": "en", "segments": lines})
+    assert keenable.requests == 1 and keenable.credits == 1.5

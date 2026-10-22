@@ -5,6 +5,7 @@ from app.verification import (
     enforce_brevity,
     is_circular,
     is_relevant,
+    is_stale,
     parse_verdict,
     postdates,
     rank_hits,
@@ -131,3 +132,12 @@ def test_usefulness_rewards_firm_verdicts_with_figures_on_the_same_subject():
         "https://www.bls.gov/table",
     )
     assert strong >= 4 > empty
+
+
+def test_stale_figures_cannot_judge_a_recent_claim():
+    claim = _claim("more than 100,000 americans are dying from overdoses every year")
+    assert is_stale("2024-06-27", claim, "CDC data for 2017 show 70,237 overdose deaths.")
+    assert not is_stale("2024-06-27", claim, "CDC data for 2022 show 107,941 overdose deaths.")
+    assert not is_stale("2024-06-27", claim, "CDC data show 107,941 overdose deaths.")
+    historical = _claim("the voting rights act passed in 1965")
+    assert not is_stale("2024-03-07", historical, "The act was signed on August 6, 1965.")

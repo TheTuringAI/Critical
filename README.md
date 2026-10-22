@@ -27,16 +27,18 @@ backend/    Stateless verification API (Python, FastAPI)
    their exact timestamps. Search queries put figures, subjects and names first and drop conversational filler.
 3. **Evidence (Keenable search)** – `POST /v1/search` with `max_results=10`, `snippet_max_length=200` (Keenable's
    minimum is 180); social/video sites are dropped, institutional domains (`.gov`, `.edu`, `.int`, statistical
-   agencies…) ranked first. Only institutional domains and an allowlist of established newsrooms, fact-checkers, encyclopedias and non-partisan research bodies are ever cited (`REPUTABLE_DOMAINS` in `verification.py`); pages titled as transcripts are skipped. The extension sends the video's publish date (`published_at`), which is given to Keenable and used to drop evidence about later years.
+   agencies…) ranked first. Only institutional domains and an allowlist of established newsrooms, fact-checkers, encyclopedias and non-partisan research bodies are ever cited (`REPUTABLE_DOMAINS` in `verification.py`); pages titled as transcripts are skipped. The extension sends the video's publish date (`published_at`), which is given to Keenable and used to drop evidence about later years, or (for supported/contradicted verdicts) figures more than two years older than the video unless the claim itself names a year.
 4. **Verdict & summary (Keenable fetch with `prompt`)** – for up to 3 top sources, `GET /v1/fetch?url=…&prompt=…`
    asks Keenable to read the page and reply `VERDICT` (`SUPPORTED`, `CONTRADICTED`, `MISSING_CONTEXT`,
    `UNVERIFIED_DATA` or `ABSTAIN`), a ≤40-word neutral `SUMMARY`, a verbatim `QUOTE` and the `PUBLISHER`.
-   The server then enforces the rules itself, dropping the note unless:
+   The prompted fetch comes first; the plain page is fetched only when it yields a verdict (Keenable bills per
+   request, so an abstaining source costs one fetch, not two). The server then enforces the rules itself, dropping
+   the note unless:
    - the quote really appears in the page (checked against a plain fetch of the same URL);
    - the summary shares a figure or key terms with the claim, and is not a "page doesn't say" non-answer;
    - the quote is not just the speaker's own words (transcripts of the same video are not evidence);
    - the summary is cut to at most 2 sentences / `MAX_NOTE_WORDS` (default 50) words.
-   - the note is useful enough (`MIN_NOTE_USEFULNESS`, default 4, on a 0–7 scale): +2 for a firm verdict
+   - the note is useful enough (`MIN_NOTE_USEFULNESS`, default 3, on a 0–7 scale; 4 keeps only firm, figure-backed notes): +2 for a firm verdict
      (supported / contradicted / missing context), +1 per key word shared with the claim (max 3), +1 if the summary
      gives a figure, +1 for an institutional source; −2 for a "this page has no data" answer without a figure
      (−1 with one), −1 if the claim's subject (e.g. "insulin") is absent from the evidence.

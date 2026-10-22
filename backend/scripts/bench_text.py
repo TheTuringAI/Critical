@@ -52,6 +52,8 @@ async def main(path: str, autocaps: bool, max_words: int | None, extract_only: b
         began = time.monotonic()
         notes = await pipeline.verifier.verify_all(claims, published)
         print(f"=== {len(notes)} notes in {time.monotonic() - began:.1f}s")
+        keenable = pipeline.keenable
+        print(f"=== Keenable: {keenable.requests} requests, {keenable.credits:.2f} credits")
         for note in notes:
             print(f"  [{note.category.value}] {note.start_time:.0f}s {note.source.publisher}: {note.summary}")
 

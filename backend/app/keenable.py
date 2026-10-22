@@ -27,6 +27,15 @@ class KeenableClient:
         self._client = client or httpx.AsyncClient(timeout=timeout)
         self._owns_client = client is None
         self.retry_delay = 1.0
+        self.requests = 0
+        self.credits = 0.0
+
+    def _bill(self, response: httpx.Response) -> dict:
+        """Keenable bills per request (1 unit per search or fetch); the counters make the cost per video visible."""
+        body = response.json()
+        self.requests += 1
+        self.credits += float((body.get("usage") or {}).get("credits") or 0)
+        return body
 
     async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
         """Retries once on rate limits and transient failures, which otherwise silently cost notes."""
@@ -60,7 +69,7 @@ class KeenableClient:
         if response.status_code >= 400:
             raise UpstreamError(f"Keenable search returned HTTP {response.status_code}")
         hits = []
-        for item in response.json().get("results", [])[:max_results]:
+        for item in self._bill(response).get("results", [])[:max_results]:
             url = item.get("url")
             if url:
                 hits.append(
@@ -96,4 +105,4 @@ class KeenableClient:
         if response.status_code >= 400:
             logger.info("Keenable fetch %s for %s: %s", response.status_code, url, response.text[:120])
             return None
-        return response.json().get("content") or None
+        return self._bill(response).get("content") or None
