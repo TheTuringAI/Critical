@@ -1,0 +1,30 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:host {
+  all: initial;
+  display: block;
+  font-family: "Roboto", "Arial", sans-serif;
+}
+
+.vco-fade {
+  transition: opacity 250ms ease, transform 250ms ease, max-height 250ms ease;
+}
+.vco-hidden {
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+}
+.vco-shown {
+  opacity: 1;
+  transform: translateY(0);
+}
+@keyframes vco-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.vco-spinner {
+  animation: vco-spin 0.9s linear infinite;
+}

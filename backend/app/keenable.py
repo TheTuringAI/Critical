@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+import httpx
+
+from .errors import ConfigurationError, UpstreamError
+from .models import SearchHit
+
+
+class KeenableClient:
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = "https://api.keenable.ai",
+        client: httpx.AsyncClient | None = None,
+        timeout: float = 30.0,
+    ):
+        if not api_key:
+            raise ConfigurationError("KEENABLE_API_KEY is not configured.")
+        self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
+        self._client = client or httpx.AsyncClient(timeout=timeout)
+        self._owns_client = client is None
+
+    async def aclose(self) -> None:
+        if self._owns_client:
+            await self._client.aclose()
+
+    async def search_claims(self, query: str, max_results: int = 3, snippet_max_length: int = 200) -> list[SearchHit]:
+        payload = {
+            "query": query,
+            "max_results": max(1, min(max_results, 50)),
+            # Keenable enforces a 180-char minimum snippet length.
+            "snippet_max_length": max(180, snippet_max_length),
+        }
+        headers = {"X-API-Key": self._api_key, "Content-Type": "application/json"}
+        try:
+            response = await self._client.post(f"{self._base_url}/v1/search", json=payload, headers=headers)
+        except httpx.HTTPError as exc:
+            raise UpstreamError(f"Keenable search failed: {type(exc).__name__}") from exc
+        if response.status_code in (401, 403):
+            raise ConfigurationError("Keenable rejected the API key.")
+        if response.status_code >= 400:
+            raise UpstreamError(f"Keenable search returned HTTP {response.status_code}")
+        hits = []
+        for item in response.json().get("results", [])[:max_results]:
+            url = item.get("url")
+            if url:
+                hits.append(
+                    SearchHit(
+                        title=item.get("title") or "",
+                        url=url,
+                        snippet=(item.get("snippet") or item.get("description") or "")[:snippet_max_length],
+                        published_at=item.get("published_at"),
+                    )
+                )
+        return hits
+
+    async def fetch_source_markdown(self, url: str, max_chars: int = 20000) -> str | None:
+        """Clean markdown for a page, or None when it cannot be fetched (dead link, bot wall, empty page)."""
+        try:
+            response = await self._client.get(
+                f"{self._base_url}/v1/fetch",
+                params={"url": url, "max_chars": max_chars},
+                headers={"X-API-Key": self._api_key},
+            )
+        except httpx.HTTPError:
+            return None
+        if response.status_code == 401:
+            raise ConfigurationError("Keenable rejected the API key.")
+        if response.status_code >= 400:
+            return None
+        return response.json().get("content") or None
