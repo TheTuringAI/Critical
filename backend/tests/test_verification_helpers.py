@@ -1,4 +1,4 @@
-from app.models import Claim, SearchHit
+from app.models import Category, Claim, SearchHit
 from app.verification import (
     authority_score,
     citation_is_grounded,
@@ -8,6 +8,7 @@ from app.verification import (
     parse_verdict,
     postdates,
     rank_hits,
+    usefulness,
 )
 
 
@@ -107,3 +108,26 @@ def test_shared_amount_alone_is_not_relevant():
         search_query="raised $500 million debt",
     )
     assert not is_relevant(claim, "Bloomberg reports Batista secured $500 million from investors.", "He secured funds.")
+
+
+def _claim(quote: str) -> Claim:
+    return Claim(claim_id="c", quote=quote, start_time=0, end_time=6, search_query="q")
+
+
+def test_usefulness_rewards_firm_verdicts_with_figures_on_the_same_subject():
+    claim = _claim("people dying from diabetes are three times as many people dying from smoking")
+    strong = usefulness(
+        claim,
+        Category.CONTRADICTED,
+        "CDC data show smoking causes about 480,000 deaths a year, far more than diabetes at about 100,000.",
+        "Cigarette smoking causes more than 480,000 deaths each year in the United States.",
+        "https://www.cdc.gov/tobacco/data",
+    )
+    empty = usefulness(
+        claim,
+        Category.UNVERIFIED_DATA,
+        "This BLS table does not contain data on diabetes or smoking deaths.",
+        "Diabetes and smoking statistics are not covered here.",
+        "https://www.bls.gov/table",
+    )
+    assert strong >= 4 > empty

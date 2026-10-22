@@ -33,6 +33,68 @@ _OPINION = re.compile(
     r"we're going to|gonna)\b",
     re.IGNORECASE,
 )
+# Subjects people make checkable statements about. A topic word alone is not a claim; it needs a change,
+# comparison, superlative, year, law or attribution next to it ("violent crime rose", "the largest tax cut").
+_TOPIC_TERMS = {
+    "economy": "economy economic gdp recession depression inflation deflation prices cost-of-living interest-rates "
+    "mortgage mortgages wage wages salary salaries income incomes minimum-wage poverty jobs unemployment employment "
+    "jobless layoffs workers labor-force manufacturing factories exports imports trade-deficit deficit deficits debt "
+    "national-debt budget spending stock-market nasdaq housing home-prices rent gas-prices gasoline oil "
+    "small-business small-businesses billionaires millionaires middle-class wealth gross-domestic-product",
+    "taxes": "tax taxes tax-cut tax-cuts tax-rate tax-rates tariff tariffs irs corporate-tax income-tax",
+    "health": "cancer lung-cancer diabetes obesity heart-disease heart-attack stroke vaccine vaccines vaccinated "
+    "vaccination covid pandemic virus disease diseases overdose overdoses fentanyl opioid opioids insulin "
+    "drug-prices prescription-drugs medicare medicaid obamacare affordable-care-act health-insurance uninsured "
+    "hospital hospitals life-expectancy abortion abortions smoking smokers cigarette cigarettes tobacco vaping "
+    "alcohol suicide suicides autism infant-mortality calories sugar cholesterol blood-pressure dna genes genetic",
+    "crime": "crime crimes violent-crime murder murders homicide homicides shooting shootings gun-violence guns "
+    "firearm firearms police arrests prison prisons incarceration inmates convicted conviction indicted felony "
+    "felonies supreme-court constitution unconstitutional",
+    "immigration": "immigrant immigrants immigration migrant migrants border illegal-aliens undocumented asylum "
+    "deportation deportations deported refugee refugees visa visas citizenship green-card",
+    "climate": "climate climate-change global-warming emissions carbon carbon-dioxide co2 temperature temperatures "
+    "sea-level sea-levels renewable renewables solar wind-power nuclear-power coal natural-gas fossil-fuel "
+    "fossil-fuels electric-vehicles wildfire wildfires hurricane hurricanes drought droughts floods pollution "
+    "glaciers",
+    "elections": "election elections voter voters votes voting ballot ballots turnout electoral-college polls "
+    "approval-rating congress senate house-of-representatives legislation vetoed veto administration president "
+    "governor federal government-shutdown",
+    "war": "war wars military troops soldiers veteran veterans nato nuclear-weapons missile missiles invasion "
+    "invaded casualties terrorist terrorists terrorism ukraine russia china israel gaza iran sanctions "
+    "foreign-aid defense-spending army navy",
+    "education": "school schools student students teacher teachers college colleges university universities "
+    "tuition student-loans student-debt graduation-rate literacy test-scores",
+    "society": "population births birth-rate fertility marriage divorce homeless homelessness crime-rate census "
+    "life-span world-record scientists study studies research",
+}
+
+
+def _phrases_pattern(phrases: list[str]) -> re.Pattern[str]:
+    # Longest phrases first so "lung cancer" wins over "cancer"; a hyphen matches spaces or hyphens.
+    ordered = sorted(set(phrases), key=len, reverse=True)
+    alternatives = "|".join(re.escape(p).replace(r"\-", r"[\s-]+") for p in ordered)
+    return re.compile(r"\b(?:" + alternatives + r")\b", re.IGNORECASE)
+
+
+_TOPIC = _phrases_pattern([term for terms in _TOPIC_TERMS.values() for term in terms.split()])
+# Changes, comparisons and superlatives turn a topic mention into something that can be checked.
+_CHANGE = re.compile(
+    r"\b(?:increased?|increasing|decreased?|decreasing|rose|risen|rising|fell|fallen|falling|dropped|"
+    r"declined?|declining|grew|grown|shrank|cut|raised|doubled|tripled|quadrupled|halved|soared|skyrocketed|"
+    r"plummeted|collapsed|surged|spiked|jumped|lost|created|added|signed|passed|banned|repealed|voted|"
+    r"approved|vetoed|killed|invented|discovered|proved|proven|highest|lowest|largest|biggest|smallest|worst|"
+    r"best|fastest|slowest|most|least|first time|never before|in history|ever recorded|record|more than|"
+    r"less than|fewer than|higher than|lower than|bigger than|as many as|as much as|compared to|since|"
+    r"every year|per year|a year|a day|per capita|every day|causes?|leads? to|linked to|responsible for)\b",
+    re.IGNORECASE,
+)
+
+
+def topic_terms(text: str) -> set[str]:
+    """Checkable subjects mentioned in a text ("violent crime", "insulin"), normalised for comparison."""
+    return {re.sub(r"[\s-]+", " ", m.group(0).lower()) for m in _TOPIC.finditer(text)}
+
+
 _SENTENCE_END = re.compile(r"[.!?]$")
 _STOPWORDS = set(
     "a an the and or but if of to in on at by for with from as is are was were be been being this that these those it "
@@ -51,9 +113,14 @@ def _score(text: str) -> int:
     has_figure = bool(_NUMBER.search(text) or _WORD_NUMBER.search(text) or _MONEY.search(text))
     has_multiplier = bool(_MULTIPLIER.search(text))
     has_statistic = bool(_STATISTIC.search(text))
+    has_topic = bool(_TOPIC.search(text))
+    has_year, has_legal, has_attribution = (bool(p.search(text)) for p in (_YEAR, _LEGAL, _ATTRIBUTION))
+    topical_change = has_topic and bool(_CHANGE.search(text))
     score = 2 * has_figure + 2 * has_multiplier + 2 * has_statistic
-    score += bool(_YEAR.search(text)) + bool(_LEGAL.search(text)) + bool(_ATTRIBUTION.search(text))
-    if has_figure or has_multiplier or has_statistic or (_LEGAL.search(text) and _YEAR.search(text)):
+    score += has_year + has_legal + has_attribution + has_topic + topical_change
+    if has_figure or has_multiplier or has_statistic or (has_legal and has_year):
+        return score
+    if has_topic and (topical_change or has_year or has_legal or has_attribution):
         return score
     return 0
 
@@ -64,7 +131,7 @@ _DIGIT_GROUPS = re.compile(r"\b(\d{1,3}) (\d{3})\b")
 
 def _anchor_offset(text: str) -> int:
     """Character offset of the first checkable anchor (figure, multiplier, statistic...)."""
-    patterns = (_NUMBER, _WORD_NUMBER, _MONEY, _MULTIPLIER, _STATISTIC, _YEAR, _LEGAL, _ATTRIBUTION)
+    patterns = (_NUMBER, _WORD_NUMBER, _MONEY, _MULTIPLIER, _STATISTIC, _YEAR, _LEGAL, _ATTRIBUTION, _TOPIC)
     offsets = [m.start() for p in patterns if (m := p.search(text))]
     return min(offsets, default=len(text))
 
@@ -75,16 +142,28 @@ def _claim_focus(text: str, lead_chars: int = 40) -> str:
     return text[cut + 1 :] if cut >= 0 else text
 
 
-def build_search_query(text: str, max_terms: int = 8) -> str:
-    terms: list[str] = []
-    for raw in re.findall(r"[$€£]?\d[\d,.]*%?|[A-Za-z][A-Za-z'-]+", text):
-        word = raw.strip("'-")
-        if word.lower() in _STOPWORDS or len(word) < 2 or word.lower() in (t.lower() for t in terms):
+def build_search_query(text: str, max_terms: int = 8, min_terms: int = 6) -> str:
+    """Figures, checkable subjects, changes and names first; other words only to pad short queries, nearest first."""
+    key_spans = [m.span() for p in (_TOPIC, _CHANGE, _LEGAL, _ATTRIBUTION) for m in p.finditer(text)]
+    key: list[tuple[int, int, str]] = []
+    filler: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"[$€£]?\d[\d,.]*%?|[A-Za-z][A-Za-z'-]+", text):
+        word = match.group(0).strip("'-")
+        if word.lower() in _STOPWORDS or len(word) < 2 or word.lower() in seen:
             continue
-        terms.append(word)
-        if len(terms) >= max_terms:
-            break
-    return " ".join(terms)
+        seen.add(word.lower())
+        if any(ch.isdigit() for ch in word):
+            key.append((0, match.start(), word))
+        elif word[0].isupper() or any(a <= match.start() < b for a, b in key_spans):
+            key.append((1, match.start(), word))
+        else:
+            filler.append((match.start(), word))
+    chosen = [(pos, word) for _, pos, word in sorted(key)[:max_terms]]
+    anchors = [pos for pos, _ in chosen] or [0]
+    filler.sort(key=lambda f: min(abs(f[0] - a) for a in anchors))
+    chosen += filler[: max(0, min_terms - len(chosen))]
+    return " ".join(word for _, word in sorted(chosen))
 
 
 def split_sentences(segments: list[TranscriptSegment], max_words: int = 40) -> list[tuple[str, float, float]]:

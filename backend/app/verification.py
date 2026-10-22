@@ -5,7 +5,7 @@ import logging
 import re
 from urllib.parse import urlparse
 
-from .claims import _STOPWORDS
+from .claims import _STOPWORDS, topic_terms
 from .keenable import KeenableClient
 from .models import Category, Claim, Note, SearchHit, Source
 
@@ -237,6 +237,22 @@ def is_relevant(claim: Claim, summary: str, citation: str) -> bool:
     return (bool(figures) and len(shared - figures) >= 1) or len(shared - figures) >= 3
 
 
+def usefulness(claim: Claim, category: Category, summary: str, citation: str, url: str) -> int:
+    """How much a note tells the viewer, 0-7: a firm verdict, the claim's own subject, concrete figures,
+    and an institutional source. "This page has no data on X" scores low unless it states what the source reports."""
+    score = 0 if category == Category.UNVERIFIED_DATA else 2
+    has_figure = any(ch.isdigit() for ch in summary)
+    if _NON_ANSWER.search(summary):
+        score -= 1 if has_figure else 2
+    evidence = f"{summary} {citation}"
+    subject = {t for t in _shared_terms(claim, evidence) if not any(ch.isdigit() for ch in t)}
+    score += min(len(subject), 3)
+    claim_topics = topic_terms(claim.quote)
+    if claim_topics and not claim_topics & topic_terms(evidence):
+        score -= 1
+    return score + has_figure + (authority_score(url) == 2)
+
+
 def postdates(published: str | None, summary: str) -> bool:
     """Evidence about years after the video was published cannot check what the speaker said at the time."""
     return bool(published) and any(int(year) > int(published[:4]) for year in _YEAR.findall(summary))
@@ -268,6 +284,7 @@ class VerificationEngine:
         max_words: int = 50,
         max_fetches: int = 3,
         concurrency: int = 4,
+        min_usefulness: int = 4,
     ):
         self._keenable = keenable
         self._max_results = max_results
@@ -275,6 +292,7 @@ class VerificationEngine:
         self._fetch_max_chars = fetch_max_chars
         self._max_words = max_words
         self._max_fetches = max_fetches
+        self._min_usefulness = min_usefulness
         self._semaphore = asyncio.Semaphore(concurrency)
 
     async def verify_all(self, claims: list[Claim], published: str | None = None) -> list[Note]:
@@ -328,9 +346,7 @@ class VerificationEngine:
             return self._reject(claim, hit, "summary unrelated to claim")
         if _SPEAKER_TALK.search(summary):
             return self._reject(claim, hit, f"summary about the video: {summary}")
-        if _NON_ANSWER.search(summary) and (
-            category != Category.UNVERIFIED_DATA or len(_shared_terms(claim, summary)) < 3
-        ):
+        if _NON_ANSWER.search(summary) and category != Category.UNVERIFIED_DATA:
             return self._reject(claim, hit, f"non-answer summary: {summary}")
         if postdates(published, summary):
             return self._reject(claim, hit, f"evidence postdates the video: {summary}")
@@ -338,6 +354,9 @@ class VerificationEngine:
         summary = summary[:1].upper() + summary[1:]
         if is_circular(claim, citation):
             return self._reject(claim, hit, "source repeats the speaker")
+        score = usefulness(claim, category, summary, citation, hit.url)
+        if score < self._min_usefulness:
+            return self._reject(claim, hit, f"not useful enough ({score}): {summary}")
         publisher = fields.get("PUBLISHER", "")
         if not publisher or publisher.lower() not in page.lower():
             publisher = domain_of(hit.url)

@@ -31,6 +31,7 @@ class Pipeline:
             fetch_max_chars=settings.fetch_max_chars,
             max_words=settings.max_note_words,
             concurrency=settings.concurrency,
+            min_usefulness=settings.min_note_usefulness,
         )
 
     async def analyze(

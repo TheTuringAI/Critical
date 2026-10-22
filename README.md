@@ -20,12 +20,15 @@ backend/    Stateless verification API (Python, FastAPI)
    No captions → HTTP 422 `NO_CAPTIONS_AVAILABLE`.
 2. **Claim extraction (rules, no LLM)** – captions are merged into sentences (or ~25-word windows for unpunctuated
    auto-captions). A sentence becomes a claim only if it contains a concrete anchor — a figure, percentage, amount,
-   year, law/bill, or attribution ("according to…") — and no opinion/speculation marker ("I think", "should",
-   "might", questions…). The best non-overlapping candidates (`MAX_CLAIMS`, default 30) keep their exact timestamps.
+   year, law/bill, or attribution ("according to…") — or a checkable subject from the topic lexicon (`_TOPIC_TERMS`
+   in `claims.py`: economy, taxes, health, crime, immigration, climate, elections, war, education, society) next to a
+   change, comparison or superlative ("violent crime rose", "the largest tax cut") — and no opinion/speculation
+   marker ("I think", "should", questions…). The best non-overlapping candidates (`MAX_CLAIMS`, default 30) keep
+   their exact timestamps. Search queries put figures, subjects and names first and drop conversational filler.
 3. **Evidence (Keenable search)** – `POST /v1/search` with `max_results=10`, `snippet_max_length=200` (Keenable's
    minimum is 180); social/video sites are dropped, institutional domains (`.gov`, `.edu`, `.int`, statistical
    agencies…) ranked first. Only institutional domains and an allowlist of established newsrooms, fact-checkers, encyclopedias and non-partisan research bodies are ever cited (`REPUTABLE_DOMAINS` in `verification.py`); pages titled as transcripts are skipped. The extension sends the video's publish date (`published_at`), which is given to Keenable and used to drop evidence about later years.
-4. **Verdict & summary (Keenable fetch with `prompt`)** – for the top 1–2 sources, `GET /v1/fetch?url=…&prompt=…`
+4. **Verdict & summary (Keenable fetch with `prompt`)** – for up to 3 top sources, `GET /v1/fetch?url=…&prompt=…`
    asks Keenable to read the page and reply `VERDICT` (`SUPPORTED`, `CONTRADICTED`, `MISSING_CONTEXT`,
    `UNVERIFIED_DATA` or `ABSTAIN`), a ≤40-word neutral `SUMMARY`, a verbatim `QUOTE` and the `PUBLISHER`.
    The server then enforces the rules itself, dropping the note unless:
@@ -33,6 +36,10 @@ backend/    Stateless verification API (Python, FastAPI)
    - the summary shares a figure or key terms with the claim, and is not a "page doesn't say" non-answer;
    - the quote is not just the speaker's own words (transcripts of the same video are not evidence);
    - the summary is cut to at most 2 sentences / `MAX_NOTE_WORDS` (default 50) words.
+   - the note is useful enough (`MIN_NOTE_USEFULNESS`, default 4, on a 0–7 scale): +2 for a firm verdict
+     (supported / contradicted / missing context), +1 per key word shared with the claim (max 3), +1 if the summary
+     gives a figure, +1 for an institutional source; −2 for a "this page has no data" answer without a figure
+     (−1 with one), −1 if the claim's subject (e.g. "insulin") is absent from the evidence.
 5. Notes are returned in-memory. Nothing (transcripts, results, users) is stored server-side; the extension caches
    results per video in `chrome.storage.session`, which is cleared when the browser closes.
 

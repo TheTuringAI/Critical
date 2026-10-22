@@ -1,6 +1,6 @@
 import pytest
 
-from app.claims import ClaimExtractor, build_search_query, split_sentences
+from app.claims import ClaimExtractor, build_search_query, split_sentences, topic_terms
 from app.models import TranscriptSegment
 
 
@@ -61,3 +61,28 @@ async def test_unpunctuated_auto_captions_yield_rhetorical_claims():
     text = " | ".join(c.quote for c in claims)
     assert "diabetes are three times as many people" in text
     assert "leading cause of lung" in text
+
+
+@pytest.mark.asyncio
+async def test_topic_with_change_is_checkable_without_figures():
+    segments = [
+        seg("Violent crime rose sharply in American cities after the pandemic ended.", 0),
+        seg("Insulin prices are the highest they have ever been for families.", 6),
+        seg("We talked about immigration and schools with lots of people tonight.", 12),
+    ]
+    quotes = [c.quote for c in await ClaimExtractor().extract(segments)]
+    assert any("Violent crime rose" in q for q in quotes)
+    assert any("Insulin prices" in q for q in quotes)
+    assert not any("talked about immigration" in q for q in quotes)
+
+
+def test_topic_terms_match_phrases_and_hyphens():
+    assert {"lung cancer", "small business"} <= topic_terms("Lung cancer hits small-business owners")
+
+
+def test_search_query_prefers_figures_and_subjects_over_filler():
+    query = build_search_query(
+        "honestly folks basically everybody remembers when inflation hit 9.1 percent under this administration"
+    ).split()
+    assert {"inflation", "9.1", "administration"} <= set(query)
+    assert "honestly" not in query

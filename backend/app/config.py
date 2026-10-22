@@ -28,6 +28,7 @@ class Settings:
     max_claims: int = field(default_factory=lambda: _env_int("MAX_CLAIMS", 30))
     concurrency: int = field(default_factory=lambda: _env_int("PIPELINE_CONCURRENCY", 4))
     max_note_words: int = field(default_factory=lambda: _env_int("MAX_NOTE_WORDS", 50))
+    min_note_usefulness: int = field(default_factory=lambda: _env_int("MIN_NOTE_USEFULNESS", 4))
     allowed_origins: list[str] = field(default_factory=lambda: _env_list("ALLOWED_ORIGINS", "https://www.youtube.com"))
     report_webhook_url: str | None = field(default_factory=lambda: os.environ.get("REPORT_WEBHOOK_URL") or None)
 
