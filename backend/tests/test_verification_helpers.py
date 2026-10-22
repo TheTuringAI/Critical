@@ -72,3 +72,12 @@ def test_relevance_requires_shared_figure_or_terms():
 def test_transcripts_of_the_same_video_are_circular():
     assert is_circular(CLAIM, "As he said, unemployment fell to 3.4 percent in January 2023.")
     assert not is_circular(CLAIM, "The unemployment rate was 3.4 percent, BLS reported.")
+
+
+def test_non_answer_patterns():
+    from app.verification import _NON_ANSWER, _SPEAKER_TALK
+
+    assert _NON_ANSWER.search("but the text does not contain data comparing deaths")
+    assert _SPEAKER_TALK.search("The speaker claims rates rose.")
+    assert not _SPEAKER_TALK.search("The CDC states that smoking causes lung cancer.")
+    assert not _NON_ANSWER.search("BLS data shows 3.4 percent in January 2023.")

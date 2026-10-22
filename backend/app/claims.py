@@ -18,9 +18,19 @@ _LEGAL = re.compile(r"\b(?:act|bill|law|amendment|treaty|ruling|resolution|execu
 _ATTRIBUTION = re.compile(
     r"\b(?:according to|reported|data shows?|statistics show|census|survey found)\b", re.IGNORECASE
 )
+_MULTIPLIER = re.compile(
+    r"\b(?:twice|double|triple|half of|(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten) times)\b",
+    re.IGNORECASE,
+)
+_STATISTIC = re.compile(
+    r"\b(?:leading cause|causes?|caused by|deaths?|dying|died|mortality|the amount of|the number of|majority of|"
+    r"most people|rate of|record high|record low)\b",
+    re.IGNORECASE,
+)
+# Strong opinion / prediction markers only: weak hedges like "would" leak in from neighbouring caption lines.
 _OPINION = re.compile(
-    r"\b(?:i think|i believe|i feel|in my opinion|we should|they should|should|would|could|might|maybe|perhaps|"
-    r"probably|i hope|i want|we will|we're going to|gonna|imagine|if we|if you|let's)\b",
+    r"\b(?:i think|i believe|i feel|in my opinion|we should|they should|you should|i hope|i want|we will|"
+    r"we're going to|gonna)\b",
     re.IGNORECASE,
 )
 _SENTENCE_END = re.compile(r"[.!?]$")
@@ -29,24 +39,36 @@ _STOPWORDS = set(
     "its we our you your they their he she his her i me my us them so than then there here what which who whom whose "
     "when where why how all any both each few more most other some such no nor not only own same too very can will "
     "just do does did have has had about into over after before again further once also because while up down out off "
-    "well like know right now really actually say said says going get got one".split()
+    "well like know right now really actually say said says going get got one let tell something nothing nobody "
+    "anything everything everybody somebody thing things yet even still ever never mean okay yeah oh guys "
+    "think thought want look see make made come came go went pulled put take took give gave".split()
 )
 
 
 def _score(text: str) -> int:
     if text.endswith("?") or _OPINION.search(text):
         return 0
-    score = 0
-    if _NUMBER.search(text) or _WORD_NUMBER.search(text) or _MONEY.search(text):
-        score += 2
-    if _YEAR.search(text):
-        score += 1
-    if _LEGAL.search(text):
-        score += 1
-    if _ATTRIBUTION.search(text):
-        score += 1
     has_figure = bool(_NUMBER.search(text) or _WORD_NUMBER.search(text) or _MONEY.search(text))
-    return score if has_figure or (_LEGAL.search(text) and _YEAR.search(text)) else 0
+    has_multiplier = bool(_MULTIPLIER.search(text))
+    has_statistic = bool(_STATISTIC.search(text))
+    score = 2 * has_figure + 2 * has_multiplier + 2 * has_statistic
+    score += bool(_YEAR.search(text)) + bool(_LEGAL.search(text)) + bool(_ATTRIBUTION.search(text))
+    if has_figure or has_multiplier or has_statistic or (_LEGAL.search(text) and _YEAR.search(text)):
+        return score
+    return 0
+
+
+def _anchor_offset(text: str) -> int:
+    """Character offset of the first checkable anchor (figure, multiplier, statistic...)."""
+    patterns = (_NUMBER, _WORD_NUMBER, _MONEY, _MULTIPLIER, _STATISTIC, _YEAR, _LEGAL, _ATTRIBUTION)
+    offsets = [m.start() for p in patterns if (m := p.search(text))]
+    return min(offsets, default=len(text))
+
+
+def _claim_focus(text: str, lead_chars: int = 40) -> str:
+    """The claim text from shortly before its first anchor: drops conversational preamble from search queries."""
+    cut = text.rfind(" ", 0, max(0, _anchor_offset(text) - lead_chars))
+    return text[cut + 1 :] if cut >= 0 else text
 
 
 def build_search_query(text: str, max_terms: int = 8) -> str:
@@ -88,38 +110,44 @@ def split_sentences(segments: list[TranscriptSegment], max_words: int = 40) -> l
     return sentences
 
 
-def _caption_windows(segments: list[TranscriptSegment]) -> list[tuple[str, float, float]]:
+def _caption_windows(segments: list[TranscriptSegment], min_words: int = 30) -> list[tuple[str, float, float]]:
+    # Speakers usually finish a claim after its anchor ("three times as many ... dying from smoking"), so each
+    # window starts one caption line early and extends forward.
     windows = []
     for index in range(len(segments)):
-        first = last = index
-        while sum(len(s.text.split()) for s in segments[first : last + 1]) < 22:
-            if first > 0 and (last == len(segments) - 1 or index - first <= last - index):
-                first -= 1
-            elif last < len(segments) - 1:
-                last += 1
-            else:
-                break
+        first = max(0, index - 1)
+        last = index
+        while last < len(segments) - 1 and sum(len(s.text.split()) for s in segments[first : last + 1]) < min_words:
+            last += 1
         text = " ".join(s.text for s in segments[first : last + 1])
         windows.append((text, segments[first].start, segments[last].end))
     return windows
 
 
+def _same_claim(a: str, b: str) -> bool:
+    """Overlapping caption windows describe the same claim when they share most of their words."""
+    words_a, words_b = set(a.lower().split()), set(b.lower().split())
+    return len(words_a & words_b) / max(1, min(len(words_a), len(words_b))) >= 0.5
+
+
 class ClaimExtractor:
-    def __init__(self, max_claims: int = 12, min_words: int = 6, max_words: int = 45):
+    def __init__(self, max_claims: int = 12, min_words: int = 8, max_words: int = 45):
         self._max_claims = max_claims
         self._min_words = min_words
         self._max_words = max_words
 
     async def extract(self, segments: list[TranscriptSegment]) -> list[Claim]:
         candidates = []
-        for text, start, end in split_sentences(segments):
+        for sentence, start, end in split_sentences(segments):
+            text = _claim_focus(sentence)
             words = len(text.split())
             score = _score(text)
             if score and self._min_words <= words <= self._max_words:
                 candidates.append((score, start, end, text))
         top: list[tuple[int, float, float, str]] = []
-        for candidate in sorted(candidates, key=lambda c: (-c[0], c[1])):
-            if all(candidate[2] <= kept[1] or candidate[1] >= kept[2] for kept in top):
+        # Among equally strong windows, prefer the one whose anchor comes earliest (least preamble).
+        for candidate in sorted(candidates, key=lambda c: (-c[0], _anchor_offset(c[3]), c[1])):
+            if all(not _same_claim(candidate[3], kept[3]) for kept in top):
                 top.append(candidate)
             if len(top) >= self._max_claims:
                 break

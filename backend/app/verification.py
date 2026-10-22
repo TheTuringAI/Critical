@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from urllib.parse import urlparse
 
@@ -43,6 +44,8 @@ INSTITUTIONAL_DOMAINS = (
     "pewresearch.org",
     "ourworldindata.org",
 )
+
+logger = logging.getLogger("vco.verification")
 
 VERDICT_PROMPT = (
     'You are an impartial fact-checker. A speaker in a video said: "{claim}"\n'
@@ -128,11 +131,16 @@ def citation_is_grounded(citation: str, evidence: str) -> bool:
     return False
 
 
+# Summaries about the video itself are never evidence.
+_SPEAKER_TALK = re.compile(r"\b(?:the (?:speaker|transcript|video|talk))\b", re.IGNORECASE)
+# "This page has no data on X" is only acceptable as an UNVERIFIED_DATA note.
 _NON_ANSWER = re.compile(
     r"\b(?:(?:does|do|did) not (?:\w+ )?(?:provide|contain|mention|discuss|address|include|cover)|"
-    r"not (?:discussed|mentioned|addressed|provided)|(?:no|any) (?:\w+ ){0,2}(?:data|information|figures)|"
-    r"the (?:speaker|transcript|video|talk)|"
-    r"states that|the (?:provided )?(?:page|text|source)|rather than)\b",
+    r"not (?:discussed|mentioned|addressed|provided)|(?:no|any) (?:\w+ ){0,2}(?:data|information|figures))\b",
+    re.IGNORECASE,
+)
+_PAGE_REFERENCE = re.compile(
+    r"\bthe (?:provided )?(?:page|text|source|document|article|study|paper|report|publication)\b",
     re.IGNORECASE,
 )
 
@@ -198,6 +206,11 @@ class VerificationEngine:
                     return note
             return None
 
+    @staticmethod
+    def _reject(claim: Claim, hit: SearchHit, reason: str) -> None:
+        logger.info("%s: no note from %s (%s)", claim.claim_id, domain_of(hit.url), reason)
+        return None
+
     async def _check_source(self, claim: Claim, hit: SearchHit) -> Note | None:
         prompt = VERDICT_PROMPT.format(claim=claim.quote[:600], max_words=min(self._max_words, 40))
         page, answer = await asyncio.gather(
@@ -205,18 +218,28 @@ class VerificationEngine:
             self._keenable.fetch_source_markdown(hit.url, self._fetch_max_chars, prompt=prompt),
         )
         if not page or not answer:
-            return None
+            return self._reject(claim, hit, "fetch failed")
         fields = parse_verdict(answer)
         try:
             category = Category(fields.get("VERDICT", "").upper().replace(" ", "_"))
         except ValueError:
-            return None
+            return self._reject(claim, hit, f"verdict {fields.get('VERDICT', 'missing')!r}")
         citation = " ".join(fields.get("QUOTE", "").split())
         summary = enforce_brevity(fields.get("SUMMARY", ""), self._max_words)
-        if not summary or not citation_is_grounded(citation, page) or not is_relevant(claim, summary, citation):
-            return None
-        if _NON_ANSWER.search(summary) or is_circular(claim, citation):
-            return None
+        if not summary:
+            return self._reject(claim, hit, "empty summary")
+        if not citation_is_grounded(citation, page):
+            return self._reject(claim, hit, "quote not found on page")
+        if not is_relevant(claim, summary, citation):
+            return self._reject(claim, hit, "summary unrelated to claim")
+        if _SPEAKER_TALK.search(summary):
+            return self._reject(claim, hit, f"summary about the video: {summary}")
+        if category != Category.UNVERIFIED_DATA and _NON_ANSWER.search(summary):
+            return self._reject(claim, hit, f"non-answer summary: {summary}")
+        summary = _PAGE_REFERENCE.sub("this source", summary)
+        summary = summary[:1].upper() + summary[1:]
+        if is_circular(claim, citation):
+            return self._reject(claim, hit, "source repeats the speaker")
         publisher = fields.get("PUBLISHER", "")
         if not publisher or publisher.lower() not in page.lower():
             publisher = domain_of(hit.url)
