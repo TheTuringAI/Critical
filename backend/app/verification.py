@@ -5,7 +5,6 @@ import re
 from urllib.parse import urlparse
 
 from .keenable import KeenableClient
-from .llm import JsonLLM
 from .models import Category, Claim, Note, SearchHit, Source
 
 EXCLUDED_DOMAINS = (
@@ -45,27 +44,27 @@ INSTITUTIONAL_DOMAINS = (
     "ourworldindata.org",
 )
 
-VERIFY_SYSTEM_PROMPT = """You are an impartial fact-checking assistant writing context notes for video viewers.
-You receive one claim made in a video and numbered evidence excerpts retrieved from the web.
+VERDICT_PROMPT = (
+    'You are an impartial fact-checker. A speaker in a video said: "{claim}"\n'
+    "Using ONLY the content of this page, reply in exactly this format and nothing else:\n"
+    "VERDICT: one of SUPPORTED, CONTRADICTED, MISSING_CONTEXT, UNVERIFIED_DATA, ABSTAIN\n"
+    "SUMMARY: 1 to 2 neutral, third-person sentences, at most {max_words} words in total, naming the source and "
+    'stating exact figures (e.g. "Federal Reserve records indicate rates rose 0.75% in July 2022, not 1.5% as '
+    'stated."). No judgmental words such as misleading, false or lie.\n'
+    "QUOTE: one sentence copied verbatim from the page (max 30 words) that supports the summary.\n"
+    "PUBLISHER: the organization that published this page.\n"
+    "Meanings: SUPPORTED = the page confirms the claim; CONTRADICTED = the page clearly shows it is wrong; "
+    "MISSING_CONTEXT = accurate but omits context that changes its meaning; UNVERIFIED_DATA = the page is on topic "
+    "but has no data confirming the specific figure. Reply ABSTAIN if the page does not directly address the claim, "
+    "is opinion or partisan, or the data is ambiguous. Also reply ABSTAIN if the page is a transcript, summary or "
+    "news report of this same talk, video or speech (it cannot independently verify the speaker). Never describe "
+    "the speaker or what the page does not contain. The page must cover the same event, place and time period as the "
+    "claim; never compare against figures from a different year or event. Abstaining is always acceptable."
+)
 
-Rules:
-- Use ONLY the evidence provided. Never use outside knowledge to fill gaps.
-- ABSTAIN if the evidence is ambiguous, partisan, off-topic, outdated for the claim, or insufficient,
-  or if the claim is actually an opinion, prediction or value judgment. Abstaining is always acceptable.
-- Otherwise choose exactly one category:
-  SUPPORTED       - evidence confirms the claim as stated.
-  CONTRADICTED    - evidence clearly shows the claim is false or materially wrong.
-  MISSING_CONTEXT - the claim is technically accurate but omits context that changes its meaning.
-  UNVERIFIED_DATA - authoritative sources exist but do not contain data that can confirm the specific figure.
-- summary: 1 to 2 sentences, at most {max_words} words total. Clinical, neutral, third-person. Lead with the
-  source ("Bureau of Labor Statistics data shows..."). State figures precisely. No adjectives like "misleading",
-  "false", "lie", no moral judgment, no speculation about intent.
-- citation: copy a short passage (max 30 words) VERBATIM from the chosen evidence excerpt that supports your summary.
-- publisher: the organization behind the chosen source (e.g. "U.S. Bureau of Labor Statistics").
-
-Return JSON: {{"decision": "EMIT" | "ABSTAIN", "category": "...", "summary": "...",
-"source_index": <int>, "citation": "...", "publisher": "...", "source_title": "..."}}"""
-
+_FIELD = re.compile(
+    r"^\s*\**(VERDICT|SUMMARY|QUOTE|PUBLISHER)\**\s*:\s*\**\s*(.*?)\s*\**\s*$", re.IGNORECASE | re.MULTILINE
+)
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")
 _TOKEN = re.compile(r"[a-z0-9]+(?:[.,][0-9]+)?")
 
@@ -99,26 +98,6 @@ def _tokens(text: str) -> list[str]:
     return _TOKEN.findall(text.lower())
 
 
-def relevant_excerpt(markdown: str, claim: Claim, max_chars: int = 2500) -> str:
-    """Keeps only paragraphs/table rows that share keywords or figures with the claim."""
-    keywords = {t for t in _tokens(f"{claim.quote} {claim.search_query}") if len(t) > 3 or any(c.isdigit() for c in t)}
-    blocks = [block.strip() for block in re.split(r"\n\s*\n|\n(?=\|)", markdown) if block.strip()]
-    scored = []
-    for position, block in enumerate(blocks):
-        overlap = len(keywords.intersection(_tokens(block)))
-        if overlap:
-            scored.append((overlap, position, block))
-    picked: list[tuple[int, str]] = []
-    total = 0
-    for _, position, block in sorted(scored, key=lambda item: (-item[0], item[1])):
-        block = block[:800]
-        if total + len(block) > max_chars:
-            break
-        picked.append((position, block))
-        total += len(block)
-    return "\n\n".join(block for _, block in sorted(picked))
-
-
 def enforce_brevity(summary: str, max_words: int) -> str:
     sentences = [s.strip() for s in _SENTENCE_SPLIT.split(" ".join(summary.split())) if s.strip()][:2]
     kept: list[str] = []
@@ -149,11 +128,43 @@ def citation_is_grounded(citation: str, evidence: str) -> bool:
     return False
 
 
+_NON_ANSWER = re.compile(
+    r"\b(?:(?:does|do|did) not (?:\w+ )?(?:provide|contain|mention|discuss|address|include|cover)|"
+    r"not (?:discussed|mentioned|addressed|provided)|(?:no|any) (?:\w+ ){0,2}(?:data|information|figures)|"
+    r"the (?:speaker|transcript|video|talk)|"
+    r"states that|the (?:provided )?(?:page|text|source)|rather than)\b",
+    re.IGNORECASE,
+)
+
+
+def is_relevant(claim: Claim, summary: str, citation: str) -> bool:
+    """The summary must be about the claim: it has to share a figure or two key terms with it."""
+    claim_terms = {t for t in _tokens(claim.search_query) if len(t) > 3 or any(ch.isdigit() for ch in t)}
+    evidence_terms = set(_tokens(f"{summary} {citation}"))
+    shared = claim_terms & evidence_terms
+    return any(any(ch.isdigit() for ch in t) for t in shared) or len(shared) >= 2
+
+
+def is_circular(claim: Claim, citation: str) -> bool:
+    """A citation that mostly repeats the speaker's own words is a transcript of the video, not evidence."""
+    claim_tokens = set(_tokens(claim.quote))
+    cited = set(_tokens(citation))
+    return bool(claim_tokens) and len(claim_tokens & cited) / len(claim_tokens) >= 0.6
+
+
+def parse_verdict(text: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for key, value in _FIELD.findall(text or ""):
+        fields.setdefault(key.upper(), value.strip().strip('"“”').strip())
+    return fields
+
+
 class VerificationEngine:
+    """Evidence and synthesis both come from Keenable: search, then fetch with an extraction prompt."""
+
     def __init__(
         self,
         keenable: KeenableClient,
-        llm: JsonLLM,
         max_results: int = 3,
         snippet_max_length: int = 200,
         fetch_max_chars: int = 20000,
@@ -162,7 +173,6 @@ class VerificationEngine:
         concurrency: int = 4,
     ):
         self._keenable = keenable
-        self._llm = llm
         self._max_results = max_results
         self._snippet_max_length = snippet_max_length
         self._fetch_max_chars = fetch_max_chars
@@ -182,55 +192,34 @@ class VerificationEngine:
             hits = rank_hits(
                 await self._keenable.search_claims(claim.search_query, self._max_results, self._snippet_max_length)
             )
-            if not hits:
-                return None
-            evidence = await self._gather_evidence(claim, hits)
-            if not evidence:
-                return None
-            return await self._synthesize(claim, evidence)
-
-    async def _gather_evidence(self, claim: Claim, hits: list[SearchHit]) -> list[tuple[SearchHit, str]]:
-        to_fetch = [hit for hit in hits if authority_score(hit.url) >= 1][: self._max_fetches]
-        pages = await asyncio.gather(
-            *(self._keenable.fetch_source_markdown(hit.url, self._fetch_max_chars) for hit in to_fetch)
-        )
-        fetched = {hit.url: page for hit, page in zip(to_fetch, pages, strict=True)}
-        evidence = []
-        for hit in hits:
-            parts = [hit.snippet] if hit.snippet else []
-            page = fetched.get(hit.url)
-            if page:
-                excerpt = relevant_excerpt(page, claim)
-                if excerpt:
-                    parts.append(excerpt)
-            if parts:
-                evidence.append((hit, "\n".join(parts)))
-        return evidence
-
-    async def _synthesize(self, claim: Claim, evidence: list[tuple[SearchHit, str]]) -> Note | None:
-        blocks = "\n\n".join(
-            f"[{i}] {hit.title} ({domain_of(hit.url)})"
-            + (f" published {hit.published_at[:10]}" if hit.published_at else "")
-            + f"\n{text}"
-            for i, (hit, text) in enumerate(evidence, start=1)
-        )
-        user = f'Claim (said in the video): "{claim.quote}"\n\nEvidence:\n{blocks}'
-        data = await self._llm.complete_json(VERIFY_SYSTEM_PROMPT.format(max_words=self._max_words), user)
-
-        if str(data.get("decision", "")).upper() != "EMIT":
+            for hit in hits[: self._max_fetches]:
+                note = await self._check_source(claim, hit)
+                if note:
+                    return note
             return None
+
+    async def _check_source(self, claim: Claim, hit: SearchHit) -> Note | None:
+        prompt = VERDICT_PROMPT.format(claim=claim.quote[:600], max_words=min(self._max_words, 40))
+        page, answer = await asyncio.gather(
+            self._keenable.fetch_source_markdown(hit.url, self._fetch_max_chars),
+            self._keenable.fetch_source_markdown(hit.url, self._fetch_max_chars, prompt=prompt),
+        )
+        if not page or not answer:
+            return None
+        fields = parse_verdict(answer)
         try:
-            category = Category(str(data.get("category", "")).upper())
-            source_index = int(data.get("source_index", 0))
-        except (ValueError, TypeError):
+            category = Category(fields.get("VERDICT", "").upper().replace(" ", "_"))
+        except ValueError:
             return None
-        if not 1 <= source_index <= len(evidence):
+        citation = " ".join(fields.get("QUOTE", "").split())
+        summary = enforce_brevity(fields.get("SUMMARY", ""), self._max_words)
+        if not summary or not citation_is_grounded(citation, page) or not is_relevant(claim, summary, citation):
             return None
-        hit, evidence_text = evidence[source_index - 1]
-        citation = " ".join(str(data.get("citation", "")).split())
-        summary = enforce_brevity(str(data.get("summary", "")), self._max_words)
-        if not summary or not citation_is_grounded(citation, evidence_text):
+        if _NON_ANSWER.search(summary) or is_circular(claim, citation):
             return None
+        publisher = fields.get("PUBLISHER", "")
+        if not publisher or publisher.lower() not in page.lower():
+            publisher = domain_of(hit.url)
         return Note(
             note_id="",
             start_time=claim.start_time,
@@ -239,8 +228,8 @@ class VerificationEngine:
             extracted_claim=claim.quote,
             summary=summary,
             source=Source(
-                title=str(data.get("source_title") or hit.title or domain_of(hit.url))[:200],
-                publisher=str(data.get("publisher") or domain_of(hit.url))[:120],
+                title=(hit.title or domain_of(hit.url))[:200],
+                publisher=publisher[:120],
                 url=hit.url,
                 citation=" ".join(citation.split()[:40]),
             ),

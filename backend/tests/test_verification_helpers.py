@@ -1,11 +1,12 @@
 from app.models import Claim, SearchHit
-from app.transcript import chunk_segments
 from app.verification import (
     authority_score,
     citation_is_grounded,
     enforce_brevity,
+    is_circular,
+    is_relevant,
+    parse_verdict,
     rank_hits,
-    relevant_excerpt,
 )
 
 
@@ -43,22 +44,31 @@ def test_citation_grounding_requires_verbatim_like_overlap():
     assert not citation_is_grounded("rose by", evidence)
 
 
-def test_relevant_excerpt_keeps_matching_blocks_only():
-    claim = Claim(
-        claim_id="c",
-        quote="unemployment fell to 3.4 percent",
-        start_time=0,
-        end_time=1,
-        search_query="unemployment rate January 2023 BLS",
-    )
-    page = "Cookie banner text.\n\nThe unemployment rate fell to 3.4 percent in January 2023.\n\nSubscribe now."
-    excerpt = relevant_excerpt(page, claim)
-    assert "3.4 percent" in excerpt
-    assert "Cookie" not in excerpt and "Subscribe" not in excerpt
+def test_parse_verdict_tolerates_markdown_and_quotes():
+    text = '**VERDICT:** CONTRADICTED\nSUMMARY: BLS data shows growth.\nQUOTE: "Employment rose."\nPUBLISHER: BLS'
+    assert parse_verdict(text) == {
+        "VERDICT": "CONTRADICTED",
+        "SUMMARY": "BLS data shows growth.",
+        "QUOTE": "Employment rose.",
+        "PUBLISHER": "BLS",
+    }
+    assert parse_verdict("") == {}
 
 
-def test_chunk_segments_overlaps_windows(segments):
-    chunks = chunk_segments(segments, chunk_seconds=30, overlap=1)
-    assert chunks[0] == [0, 1, 2]
-    assert chunks[1][0] == 2
-    assert sorted({i for c in chunks for i in c}) == list(range(len(segments)))
+CLAIM = Claim(
+    claim_id="c",
+    quote="unemployment fell to 3.4 percent in January 2023",
+    start_time=0,
+    end_time=6,
+    search_query="unemployment fell 3.4 percent January 2023",
+)
+
+
+def test_relevance_requires_shared_figure_or_terms():
+    assert is_relevant(CLAIM, "BLS data shows a rate of 3.4 percent.", "The rate was 3.4 percent.")
+    assert not is_relevant(CLAIM, "A list of sovereign states in 1963.", "Countries are listed.")
+
+
+def test_transcripts_of_the_same_video_are_circular():
+    assert is_circular(CLAIM, "As he said, unemployment fell to 3.4 percent in January 2023.")
+    assert not is_circular(CLAIM, "The unemployment rate was 3.4 percent, BLS reported.")

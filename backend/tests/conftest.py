@@ -1,30 +1,10 @@
 from __future__ import annotations
 
 import json
-from typing import Any
 
 import pytest
 
 from app.models import TranscriptSegment
-
-
-class FakeLLM:
-    """Routes prompts to canned responses: claim extraction vs. verification."""
-
-    def __init__(self, claims: list[dict] | None = None, verdicts: dict[str, dict] | None = None):
-        self.claims = claims or []
-        self.verdicts = verdicts or {}
-        self.calls: list[tuple[str, str]] = []
-
-    async def complete_json(self, system: str, user: str) -> dict[str, Any]:
-        self.calls.append((system, user))
-        if "VERIFIABLE FACTUAL CLAIMS" in system:
-            indices = {int(line.split("]")[0][1:]) for line in user.splitlines() if line.startswith("[")}
-            return {"claims": [c for c in self.claims if c["first_segment"] in indices]}
-        for needle, verdict in self.verdicts.items():
-            if needle in user:
-                return verdict
-        return {"decision": "ABSTAIN"}
 
 
 class FakeTranscripts:

@@ -12,7 +12,7 @@ class KeenableClient:
         api_key: str,
         base_url: str = "https://api.keenable.ai",
         client: httpx.AsyncClient | None = None,
-        timeout: float = 30.0,
+        timeout: float = 60.0,
     ):
         if not api_key:
             raise ConfigurationError("KEENABLE_API_KEY is not configured.")
@@ -55,12 +55,18 @@ class KeenableClient:
                 )
         return hits
 
-    async def fetch_source_markdown(self, url: str, max_chars: int = 20000) -> str | None:
-        """Clean markdown for a page, or None when it cannot be fetched (dead link, bot wall, empty page)."""
+    async def fetch_source_markdown(self, url: str, max_chars: int = 20000, prompt: str | None = None) -> str | None:
+        """Clean markdown for a page, or None when it cannot be fetched (dead link, bot wall, empty page).
+
+        With `prompt`, Keenable reads the page itself and returns only its answer to the instruction.
+        """
+        params: dict[str, str | int] = {"url": url, "max_chars": max_chars}
+        if prompt:
+            params["prompt"] = prompt[:2000]
         try:
             response = await self._client.get(
                 f"{self._base_url}/v1/fetch",
-                params={"url": url, "max_chars": max_chars},
+                params=params,
                 headers={"X-API-Key": self._api_key},
             )
         except httpx.HTTPError:

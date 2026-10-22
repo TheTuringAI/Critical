@@ -3,9 +3,9 @@
 Open-source, privacy-first context notes for English YouTube videos — inspired by Community Notes, built for video.
 
 A Manifest V3 Chrome extension adds an **"Add Context & Fact-Check"** button under the YouTube player. On click, a
-stateless FastAPI service pulls the video's English captions, extracts *verifiable* factual claims with an LLM,
-retrieves evidence through the [Keenable](https://keenable.ai) search & fetch API, and returns short, neutral,
-source-linked notes. The extension shows each note in a **Context Bubble** while the matching part of the video plays.
+stateless FastAPI service pulls the video's English captions, picks out *verifiable* factual claims with deterministic
+rules, then asks the [Keenable](https://keenable.ai) search & fetch API both for evidence and for the short verdict
+summary. **Only a Keenable API key is needed — no LLM key.** It returns short, neutral, source-linked notes. The extension shows each note in a **Context Bubble** while the matching part of the video plays.
 
 ```
 extension/  Chrome extension (TypeScript, React, Tailwind, Vite)
@@ -16,18 +16,21 @@ backend/    Stateless verification API (Python, FastAPI)
 
 1. **Transcript** – `youtube-transcript-api` (manual English captions preferred, auto-generated as fallback).
    No captions → HTTP 422 `NO_CAPTIONS_AVAILABLE`.
-2. **Claim extraction** – the transcript is split into ~3-minute overlapping windows; the LLM returns only checkable
-   claims (figures, dates, laws, attributed quotes) with segment indices, mapped back to exact timestamps.
-   Opinions, predictions and value judgments are ignored.
-3. **Evidence (Keenable)** – `POST /v1/search` with `max_results=3`, `snippet_max_length=200`; social/video sites are
-   dropped, institutional domains (`.gov`, `.edu`, `.int`, statistical agencies…) ranked first; the top
-   institutional pages are scraped via `GET /v1/fetch` and reduced to the paragraphs/table rows that mention the
-   claim's keywords or figures.
-4. **Verdict** – the LLM either abstains or picks `SUPPORTED`, `CONTRADICTED`, `MISSING_CONTEXT` or
-   `UNVERIFIED_DATA` using only that evidence. The server then enforces the rules itself:
-   - the cited excerpt must actually appear in the retrieved evidence, otherwise **no note**;
-   - the summary is cut to at most 2 sentences / `MAX_NOTE_WORDS` (default 50) words;
-   - any malformed answer, unknown category or invalid source → **no note** (abstention by default).
+2. **Claim extraction (rules, no LLM)** – captions are merged into sentences (or ~25-word windows for unpunctuated
+   auto-captions). A sentence becomes a claim only if it contains a concrete anchor — a figure, percentage, amount,
+   year, law/bill, or attribution ("according to…") — and no opinion/speculation marker ("I think", "should",
+   "might", questions…). The best non-overlapping candidates (`MAX_CLAIMS`, default 12) keep their exact timestamps.
+3. **Evidence (Keenable search)** – `POST /v1/search` with `max_results=3`, `snippet_max_length=200` (Keenable's
+   minimum is 180); social/video sites are dropped, institutional domains (`.gov`, `.edu`, `.int`, statistical
+   agencies…) ranked first.
+4. **Verdict & summary (Keenable fetch with `prompt`)** – for the top 1–2 sources, `GET /v1/fetch?url=…&prompt=…`
+   asks Keenable to read the page and reply `VERDICT` (`SUPPORTED`, `CONTRADICTED`, `MISSING_CONTEXT`,
+   `UNVERIFIED_DATA` or `ABSTAIN`), a ≤40-word neutral `SUMMARY`, a verbatim `QUOTE` and the `PUBLISHER`.
+   The server then enforces the rules itself, dropping the note unless:
+   - the quote really appears in the page (checked against a plain fetch of the same URL);
+   - the summary shares a figure or key terms with the claim, and is not a "page doesn't say" non-answer;
+   - the quote is not just the speaker's own words (transcripts of the same video are not evidence);
+   - the summary is cut to at most 2 sentences / `MAX_NOTE_WORDS` (default 50) words.
 5. Notes are returned in-memory. Nothing (transcripts, results, users) is stored server-side; the extension caches
    results per video in `chrome.storage.session`, which is cleared when the browser closes.
 
@@ -37,13 +40,13 @@ backend/    Stateless verification API (Python, FastAPI)
 cd backend
 python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
-cp .env.example .env    # set KEENABLE_API_KEY and LLM_API_KEY
+cp .env.example .env    # set KEENABLE_API_KEY
 set -a && source .env && set +a
 uvicorn app.main:app --port 8000
 ```
 
-Any OpenAI-compatible chat endpoint works for the LLM (`LLM_BASE_URL`, `LLM_MODEL`; default `gpt-4o-mini`).
-See `.env.example` for all settings.
+See `.env.example` for all settings. To try the real pipeline from the command line:
+`PYTHONPATH=. python scripts/live_check.py <video_id> [...]` prints the extracted claims and resulting notes.
 
 | Endpoint | Description |
 | --- | --- |

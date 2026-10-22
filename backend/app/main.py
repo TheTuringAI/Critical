@@ -13,7 +13,6 @@ from .claims import ClaimExtractor
 from .config import Settings, get_settings
 from .errors import PipelineError
 from .keenable import KeenableClient
-from .llm import JsonLLM, OpenAICompatibleLLM
 from .models import AnalyzeRequest, AnalyzeResponse, ReportRequest, ReportResponse
 from .transcript import TranscriptService
 from .verification import VerificationEngine
@@ -22,12 +21,11 @@ logger = logging.getLogger("video_context_overlay")
 
 
 class Pipeline:
-    def __init__(self, settings: Settings, transcripts: TranscriptService, keenable: KeenableClient, llm: JsonLLM):
+    def __init__(self, settings: Settings, transcripts: TranscriptService, keenable: KeenableClient):
         self.transcripts = transcripts
-        self.extractor = ClaimExtractor(llm, settings.chunk_seconds, settings.max_claims, settings.concurrency)
+        self.extractor = ClaimExtractor(settings.max_claims)
         self.verifier = VerificationEngine(
             keenable,
-            llm,
             max_results=settings.search_max_results,
             snippet_max_length=settings.snippet_max_length,
             fetch_max_chars=settings.fetch_max_chars,
@@ -45,8 +43,7 @@ class Pipeline:
 
 def build_pipeline(settings: Settings, http: httpx.AsyncClient) -> Pipeline:
     keenable = KeenableClient(settings.keenable_api_key, settings.keenable_base_url, client=http)
-    llm = OpenAICompatibleLLM(settings.llm_api_key, settings.llm_model, settings.llm_base_url)
-    return Pipeline(settings, TranscriptService(), keenable, llm)
+    return Pipeline(settings, TranscriptService(), keenable)
 
 
 def create_app(settings: Settings | None = None, pipeline: Pipeline | None = None) -> FastAPI:
@@ -54,7 +51,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        async with httpx.AsyncClient(timeout=30.0) as http:
+        async with httpx.AsyncClient(timeout=60.0) as http:
             app.state.http = http
             app.state.pipeline = pipeline
             if app.state.pipeline is None:

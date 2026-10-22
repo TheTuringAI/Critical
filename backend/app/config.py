@@ -22,16 +22,10 @@ class Settings:
     keenable_base_url: str = field(
         default_factory=lambda: os.environ.get("KEENABLE_BASE_URL", "https://api.keenable.ai").rstrip("/")
     )
-    llm_api_key: str = field(
-        default_factory=lambda: os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
-    )
-    llm_base_url: str | None = field(default_factory=lambda: os.environ.get("LLM_BASE_URL") or None)
-    llm_model: str = field(default_factory=lambda: os.environ.get("LLM_MODEL", "gpt-4o-mini"))
     search_max_results: int = field(default_factory=lambda: _env_int("SEARCH_MAX_RESULTS", 3))
     snippet_max_length: int = field(default_factory=lambda: _env_int("SNIPPET_MAX_LENGTH", 200))
     fetch_max_chars: int = field(default_factory=lambda: _env_int("FETCH_MAX_CHARS", 20000))
     max_claims: int = field(default_factory=lambda: _env_int("MAX_CLAIMS", 12))
-    chunk_seconds: int = field(default_factory=lambda: _env_int("CHUNK_SECONDS", 180))
     concurrency: int = field(default_factory=lambda: _env_int("PIPELINE_CONCURRENCY", 4))
     max_note_words: int = field(default_factory=lambda: _env_int("MAX_NOTE_WORDS", 50))
     allowed_origins: list[str] = field(default_factory=lambda: _env_list("ALLOWED_ORIGINS", "https://www.youtube.com"))
